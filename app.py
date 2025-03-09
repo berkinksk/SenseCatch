@@ -1,29 +1,26 @@
 from flask import Flask, request, jsonify, render_template
 import pickle
-import numpy as np
 import re
 import os
+import nltk
+from nltk.tokenize import word_tokenize
 
 app = Flask(__name__)
 
-# Check if model files exist before loading
-model_files = {
-    'naive_bayes': 'models/naive_bayes.pkl',
-    'logistic_regression': 'models/logistic_regression.pkl'
-}
+# Download NLTK data if needed
+nltk.download('punkt')
 
-# Initialize models as None
-nb_model, count_vectorizer = None, None
-lr_model, tfidf_vectorizer = None, None
+# Load classifier
+classifier = None
+model_path = 'models/naive_bayes_nltk.pkl'
+if os.path.exists(model_path):
+    with open(model_path, 'rb') as f:
+        classifier = pickle.load(f)
 
-# Load models if they exist
-if os.path.exists(model_files['naive_bayes']):
-    with open(model_files['naive_bayes'], 'rb') as f:
-        nb_model, count_vectorizer = pickle.load(f)
-    
-if os.path.exists(model_files['logistic_regression']):
-    with open(model_files['logistic_regression'], 'rb') as f:
-        lr_model, tfidf_vectorizer = pickle.load(f)
+# Function to extract features from text
+def extract_features(text):
+    words = word_tokenize(text.lower())
+    return {word: True for word in words}
 
 # Function to clean text
 def clean_text(text):
@@ -42,60 +39,42 @@ def analyze():
     text = data['text']
     model_type = data['model']
     
-    # Check if models are loaded
-    if nb_model is None or lr_model is None:
+    # Check if model is loaded
+    if classifier is None:
         return jsonify({
-            'error': 'Models not loaded. Please run train_models.py first.'
+            'error': 'Model not loaded. Please run train_models.py first.'
         }), 500
     
     # Clean text
     cleaned_text = clean_text(text)
     
-    # Make prediction based on model type
-    if model_type == 'naive_bayes':
-        features = count_vectorizer.transform([cleaned_text])
-        prediction = nb_model.predict(features)[0]
-        confidence = float(np.max(nb_model.predict_proba(features)[0]))
-        
-        # Get top positive and negative words
-        word_importance = {}
-        for word, idx in count_vectorizer.vocabulary_.items():
-            if word in cleaned_text.split():
-                importance = nb_model.feature_log_prob_[1][idx] - nb_model.feature_log_prob_[0][idx]
-                word_importance[word] = importance
-        
-        # Sort by importance
-        important_words = sorted(word_importance.items(), key=lambda x: abs(x[1]), reverse=True)[:5]
-        important_words = [{"word": word, "importance": float(imp), "sentiment": "positive" if imp > 0 else "negative"} 
-                          for word, imp in important_words]
-        
-    elif model_type == 'logistic_regression':
-        features = tfidf_vectorizer.transform([cleaned_text])
-        prediction = lr_model.predict(features)[0]
-        confidence = float(np.max(lr_model.predict_proba(features)[0]))
-        
-        # Get top important words for logistic regression
-        word_importance = {}
-        for word, idx in tfidf_vectorizer.vocabulary_.items():
-            if word in cleaned_text.split():
-                importance = lr_model.coef_[0][idx]  # Coefficient indicates importance
-                word_importance[word] = importance
-        
-        # Sort by importance
-        important_words = sorted(word_importance.items(), key=lambda x: abs(x[1]), reverse=True)[:5]
-        important_words = [{"word": word, "importance": float(imp), "sentiment": "positive" if imp > 0 else "negative"} 
-                          for word, imp in important_words]
+    # Extract features
+    features = extract_features(cleaned_text)
     
-    # Determine sentiment
-    sentiment = "Positive" if prediction == 1 else "Negative"
+    # Make prediction
+    sentiment = classifier.classify(features)
+    dist = classifier.prob_classify(features)
+    confidence = dist.prob(sentiment) * 100
+    
+    # Get important words
+    important_words = []
+    informative_words = classifier.most_informative_features(10)
+    for word, _ in informative_words:
+        if word in features:
+            importance = dist.prob('positive') if sentiment == 'positive' else dist.prob('negative')
+            important_words.append({
+                "word": word, 
+                "importance": float(importance), 
+                "sentiment": sentiment
+            })
     
     # Return prediction
     return jsonify({
         'text': text,
-        'sentiment': sentiment,
-        'confidence': round(confidence * 100, 2),
+        'sentiment': sentiment.capitalize(),
+        'confidence': round(confidence, 2),
         'model': model_type,
-        'important_words': important_words
+        'important_words': important_words[:5]
     })
 
 if __name__ == '__main__':
