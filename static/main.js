@@ -165,4 +165,19 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Add focus to the text input on page load
     textInput.focus();
+    // Set up clear history button
+const clearHistoryBtn = document.getElementById('clear-history-btn');
+clearHistoryBtn.addEventListener('click', () => {
+    if (analysisHistory.length === 0) {
+        return; // Nothing to clear
+    }
+    
+    if (confirm('Are you sure you want to clear your analysis history?')) {
+        // Clear history array
+        analysisHistory.length = 0;
+        
+        // Update display
+        updateHistoryDisplay();
+    }
+});
 });
