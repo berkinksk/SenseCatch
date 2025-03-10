@@ -1,13 +1,12 @@
 """
-Sentiment lexicon utilities for SenseCatch
-Provides pre-defined sentiment scores for words to enhance model accuracy
+Simplified sentiment lexicon utilities for SenseCatch
+Only uses VADER and custom lexicon, avoiding SentiWordNet
 """
 import os
 import json
 import re
 import logging
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
-from nltk.corpus import sentiwordnet as swn
 import nltk
 
 # Configure logging
@@ -17,8 +16,6 @@ logger = logging.getLogger(__name__)
 # Download necessary NLTK data
 try:
     nltk.download('vader_lexicon', quiet=True)
-    nltk.download('sentiwordnet', quiet=True)
-    nltk.download('wordnet', quiet=True)
     logger.info("NLTK resources downloaded successfully")
 except Exception as e:
     logger.error(f"Error downloading NLTK resources: {e}")
@@ -146,51 +143,6 @@ class SentimentLexiconFeatures:
         # Return normalized score or 0 if no words found
         return total_score / max(found_words, 1) if found_words > 0 else 0.0
     
-    # In sentiment_lexicon.py, update the get_sentiwordnet_score method:
-
-# In sentiment_lexicon.py, update the get_sentiwordnet_score method:
-
-def get_sentiwordnet_score(self, text):
-    """Calculate sentiment score using SentiWordNet"""
-    try:
-        # Check if we have the required resources
-        try:
-            # Try to import the necessary resource
-            from nltk.corpus import wordnet
-            # If we get here, wordnet is available
-        except (ImportError, LookupError) as e:
-            logger.warning(f"WordNet resources not fully available, skipping SentiWordNet score: {e}")
-            return 0.0
-            
-        words = re.findall(r'\b\w+\b', text.lower())
-        pos_score = 0.0
-        neg_score = 0.0
-        count = 0
-        
-        for word in words:
-            try:
-                synsets = list(swn.senti_synsets(word))
-                if synsets:
-                    # Average over all synsets
-                    word_pos = sum(s.pos_score() for s in synsets) / len(synsets)
-                    word_neg = sum(s.neg_score() for s in synsets) / len(synsets)
-                    pos_score += word_pos
-                    neg_score += word_neg
-                    count += 1
-            except Exception as e:
-                # Skip words that cause problems
-                logger.debug(f"Error processing word '{word}' in SentiWordNet: {e}")
-                continue
-        
-        if count == 0:
-            return 0.0
-        
-        # Return normalized difference between positive and negative
-        return (pos_score - neg_score) / count
-    except Exception as e:
-        logger.error(f"Error getting SentiWordNet score: {e}")
-        return 0.0
-    
     def extract_all_features(self, text):
         """Extract all sentiment lexicon features for a text"""
         features = {}
@@ -204,9 +156,6 @@ def get_sentiwordnet_score(self, text):
         
         # Get custom lexicon score
         features['custom_score'] = self.get_custom_lexicon_score(text)
-        
-        # Get SentiWordNet score 
-        features['sentiwordnet'] = self.get_sentiwordnet_score(text)
         
         return features
     
