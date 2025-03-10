@@ -54,12 +54,41 @@ def analyze():
         cleaned_text = clean_text(text)
         logger.info(f"Cleaned text: '{cleaned_text}'")
         
-        # Simple fallback approach when ensemble fails
-        # This ensures basic functionality even if the ensemble has issues
-        if model_type == 'ensemble' and ensemble is not None:
+        # First handle obvious cases directly
+        is_simple_case, simple_pred, simple_conf = ensemble._handle_simple_cases(text)
+        if is_simple_case:
+            sentiment = "Positive" if simple_pred == 1 else "Negative"
+            confidence = simple_conf * 100
+            
+            # Create simple influential words for explanation
+            important_words = []
+            for word in text.lower().split():
+                if word in ["awesome", "amazing", "excellent", "great", "good", "love", 
+                           "terrible", "awful", "horrible", "hate", "bad", "worst"]:
+                    sentiment_type = "positive" if word in ["awesome", "amazing", "excellent", "great", "good", "love"] else "negative"
+                    important_words.append({
+                        "word": word,
+                        "importance": 95.0,
+                        "sentiment": sentiment_type
+                    })
+            
+            important_words = important_words[:5]  # Take up to 5 words
+            
+            logger.info(f"Simple case detected: {sentiment} with {confidence}% confidence")
+            return jsonify({
+                'text': text,
+                'sentiment': sentiment,
+                'confidence': round(confidence, 2),
+                'model': model_type,
+                'important_words': important_words
+            })
+        
+        # If using ensemble model
+        if model_type == 'ensemble':
             try:
                 prediction, confidence, important_words = ensemble.predict(text)
                 sentiment = "Positive" if prediction == 1 else "Negative"
+                confidence = confidence * 100  # Convert to percentage
             except Exception as e:
                 logger.error(f"Error using ensemble model: {str(e)}")
                 logger.error(traceback.format_exc())
@@ -90,10 +119,10 @@ def analyze():
             # Get prediction probability
             try:
                 proba = model.predict_proba(X)[0]
-                confidence = proba[1] if prediction == 1 else proba[0]
+                confidence = proba[1] * 100 if prediction == 1 else proba[0] * 100
             except AttributeError as e:
                 logger.error(f"Error getting prediction probability: {str(e)}")
-                confidence = 0.85  # Fallback confidence
+                confidence = 85.0  # Fallback confidence
             
             # Get important words
             try:
@@ -102,14 +131,11 @@ def analyze():
                 logger.error(f"Error extracting influential words: {str(e)}")
                 important_words = []
         
-        # Format confidence as percentage
-        confidence_pct = confidence * 100 if confidence <= 1 else confidence
-        
         # Return prediction
         return jsonify({
             'text': text,
             'sentiment': sentiment,
-            'confidence': round(confidence_pct, 2),
+            'confidence': round(confidence, 2),
             'model': model_type,
             'important_words': important_words
         })
