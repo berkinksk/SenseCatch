@@ -5,11 +5,14 @@ import os
 import re
 import nltk
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
+from sklearn.feature_extraction import DictVectorizer
 from sklearn.naive_bayes import MultinomialNB
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 from sklearn.pipeline import Pipeline
+from scipy.sparse import hstack
+from sentiment_lexicon import SentimentLexiconFeatures
 
 # Create models directory if it doesn't exist
 if not os.path.exists('models'):
@@ -21,11 +24,14 @@ print("Downloading NLTK data...")
 # Download required NLTK data
 nltk.download('movie_reviews')
 nltk.download('stopwords')
-nltk.download('punkt')  # For tokenization
+nltk.download('punkt')
+nltk.download('vader_lexicon')
+nltk.download('sentiwordnet')
+nltk.download('wordnet')
 from nltk.corpus import movie_reviews, stopwords
 from nltk.tokenize import word_tokenize
 
-# ==== NEW: IMPROVED TEXT PREPROCESSING WITH NEGATION HANDLING ====
+# ==== IMPROVED TEXT PREPROCESSING WITH NEGATION HANDLING ====
 
 def handle_negations(text):
     """
@@ -73,7 +79,7 @@ def clean_text(text):
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
-# ==== END NEW PREPROCESSING CODE ====
+# ==== END PREPROCESSING CODE ====
 
 print("Preparing data from NLTK movie reviews...")
 
@@ -203,6 +209,29 @@ X_train, X_test, y_train, y_test = train_test_split(
 print(f"Training set size: {len(X_train)}")
 print(f"Testing set size: {len(X_test)}")
 
+# Initialize sentiment lexicon features
+print("Initializing sentiment lexicon features...")
+lexicon = SentimentLexiconFeatures()
+
+# Function to extract lexicon features
+def extract_lexicon_features(texts):
+    """Extract sentiment lexicon features for a list of texts"""
+    features = []
+    for text in texts:
+        lexicon_features = lexicon.extract_all_features(text)
+        features.append(lexicon_features)
+    return features
+
+# Extract lexicon features from training and testing data
+print("Extracting lexicon features...")
+X_train_lexicon = extract_lexicon_features(X_train)
+X_test_lexicon = extract_lexicon_features(X_test)
+
+# Create a DictVectorizer to transform lexicon features
+dict_vectorizer = DictVectorizer()
+X_train_lexicon_vec = dict_vectorizer.fit_transform(X_train_lexicon)
+X_test_lexicon_vec = dict_vectorizer.transform(X_test_lexicon)
+
 # Create feature extractors
 print("Creating feature extractors...")
 stop_words = 'english'
@@ -240,10 +269,18 @@ X_test_tfidf = tfidf_vectorizer.transform(X_test)
 print(f"CountVectorizer vocabulary size: {len(count_vectorizer.vocabulary_)}")
 print(f"TfidfVectorizer vocabulary size: {len(tfidf_vectorizer.vocabulary_)}")
 
+# Combine features for Naive Bayes
+X_train_combined_nb = hstack([X_train_counts, X_train_lexicon_vec])
+X_test_combined_nb = hstack([X_test_counts, X_test_lexicon_vec])
+
+# Combine features for Logistic Regression
+X_train_combined_lr = hstack([X_train_tfidf, X_train_lexicon_vec])
+X_test_combined_lr = hstack([X_test_tfidf, X_test_lexicon_vec])
+
 # Train Naive Bayes model with improved hyperparameters
 print("Training Naive Bayes model...")
 nb_model = MultinomialNB(alpha=0.1)
-nb_model.fit(X_train_counts, y_train)
+nb_model.fit(X_train_combined_nb, y_train)
 
 # Train Logistic Regression model with improved hyperparameters
 print("Training Logistic Regression model...")
@@ -253,11 +290,11 @@ lr_model = LogisticRegression(
     class_weight='balanced',
     solver='liblinear'
 )
-lr_model.fit(X_train_tfidf, y_train)
+lr_model.fit(X_train_combined_lr, y_train)
 
 # Evaluate models
-nb_predictions = nb_model.predict(X_test_counts)
-lr_predictions = lr_model.predict(X_test_tfidf)
+nb_predictions = nb_model.predict(X_test_combined_nb)
+lr_predictions = lr_model.predict(X_test_combined_lr)
 
 print("\n--- Model Evaluation ---")
 print("Naive Bayes Accuracy:", accuracy_score(y_test, nb_predictions))
@@ -291,20 +328,26 @@ for orig, proc in zip(challenge_examples, challenge_examples_processed):
     print(f"Processed: \"{proc}\"")
     print()
 
+# Extract lexicon features for challenge examples
+challenge_lexicon = extract_lexicon_features(challenge_examples_processed)
+challenge_lexicon_vec = dict_vectorizer.transform(challenge_lexicon)
+
 print("Naive Bayes predictions:")
 X_challenge_counts = count_vectorizer.transform(challenge_examples_processed)
+X_challenge_combined_nb = hstack([X_challenge_counts, challenge_lexicon_vec])
 for i, example in enumerate(challenge_examples):
-    prediction = nb_model.predict(X_challenge_counts[i:i+1])[0]
-    proba = nb_model.predict_proba(X_challenge_counts[i:i+1])[0]
+    prediction = nb_model.predict(X_challenge_combined_nb[i:i+1])[0]
+    proba = nb_model.predict_proba(X_challenge_combined_nb[i:i+1])[0]
     confidence = proba[1] if prediction == 1 else proba[0]
     sentiment = "Positive" if prediction == 1 else "Negative"
     print(f'"{example}" => {sentiment} ({confidence*100:.2f}% confidence)')
 
 print("\nLogistic Regression predictions:")
 X_challenge_tfidf = tfidf_vectorizer.transform(challenge_examples_processed)
+X_challenge_combined_lr = hstack([X_challenge_tfidf, challenge_lexicon_vec])
 for i, example in enumerate(challenge_examples):
-    prediction = lr_model.predict(X_challenge_tfidf[i:i+1])[0]
-    proba = lr_model.predict_proba(X_challenge_tfidf[i:i+1])[0]
+    prediction = lr_model.predict(X_challenge_combined_lr[i:i+1])[0]
+    proba = lr_model.predict_proba(X_challenge_combined_lr[i:i+1])[0]
     confidence = proba[1] if prediction == 1 else proba[0]
     sentiment = "Positive" if prediction == 1 else "Negative"
     print(f'"{example}" => {sentiment} ({confidence*100:.2f}% confidence)')
@@ -312,9 +355,10 @@ for i, example in enumerate(challenge_examples):
 # Save models and vectorizers as tuples
 print("\nSaving models to disk...")
 with open('models/naive_bayes.pkl', 'wb') as f:
-    pickle.dump((nb_model, count_vectorizer), f)
+    pickle.dump((nb_model, count_vectorizer, dict_vectorizer), f)
     
 with open('models/logistic_regression.pkl', 'wb') as f:
-    pickle.dump((lr_model, tfidf_vectorizer), f)
+    pickle.dump((lr_model, tfidf_vectorizer, dict_vectorizer), f)
 
 print("Models trained and saved successfully!")
+print("\nYou can now run the Flask application with 'python app.py'")
