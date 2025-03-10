@@ -8,10 +8,21 @@ import os
 import traceback
 import logging
 import re
+import nltk
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
+
+# Set NLTK data path explicitly
+nltk_data_path = os.path.join(os.getcwd(), 'nltk_data')
+if not os.path.exists(nltk_data_path):
+    os.makedirs(nltk_data_path)
+nltk.data.path.insert(0, nltk_data_path)
+
+# Simple fallback tokenizer
+def simple_tokenize(text):
+    return text.lower().split()
 
 # Safely import nltk
 try:
@@ -21,7 +32,7 @@ except ImportError:
     logger.error("Error importing NLTK. Using fallback tokenizer.")
     # Fallback simple tokenizer if nltk is not available
     def word_tokenize(text):
-        return text.split()
+        return simple_tokenize(text)
 
 class SentimentEnsemble:
     """Ensemble model that combines multiple sentiment classifiers"""
@@ -48,13 +59,27 @@ class SentimentEnsemble:
             try:
                 if os.path.exists(path):
                     with open(path, 'rb') as f:
-                        # Check if file contains 3 objects (model, text_vectorizer, dict_vectorizer)
+                        # Try different loading strategies
                         try:
-                            model, vectorizer, dict_vec = pickle.load(f)
-                            self.dict_vectorizers[model_name] = dict_vec
-                        except ValueError:
-                            # Old format with just model and vectorizer
-                            model, vectorizer = pickle.load(f) 
+                            # First try the 3-tuple format (model, text_vectorizer, dict_vectorizer)
+                            loaded_data = pickle.load(f)
+                            if isinstance(loaded_data, tuple):
+                                if len(loaded_data) == 3:
+                                    model, vectorizer, dict_vec = loaded_data
+                                    self.dict_vectorizers[model_name] = dict_vec
+                                elif len(loaded_data) == 2:
+                                    model, vectorizer = loaded_data
+                                else:
+                                    raise ValueError(f"Unexpected tuple length: {len(loaded_data)}")
+                            else:
+                                # Maybe it's just the model
+                                model = loaded_data
+                                vectorizer = None
+                                logger.warning(f"Loaded only model for {model_name}, no vectorizer found")
+                        except Exception as e:
+                            logger.error(f"Error unpacking model: {str(e)}")
+                            logger.error(traceback.format_exc())
+                            continue
                         
                         self.models[model_name] = model
                         self.vectorizers[model_name] = vectorizer
@@ -103,8 +128,12 @@ class SentimentEnsemble:
                              'aren\'t', 'ain\'t', 'wasn\'t', 'weren\'t', 'haven\'t', 
                              'hasn\'t', 'hadn\'t', 'won\'t', 'nor', 'neither']
             
-            # Tokenize the text
-            words = word_tokenize(text.lower())
+            # Try NLTK tokenization first
+            try:
+                words = word_tokenize(text.lower())
+            except Exception as e:
+                logger.warning(f"NLTK tokenization failed, using fallback: {e}")
+                words = simple_tokenize(text.lower())
             
             # Process negations
             in_negation = False
@@ -138,8 +167,14 @@ class SentimentEnsemble:
             text = text.lower()
             # Remove special characters but keep apostrophes for negations
             text = re.sub(r'[^\w\s\']', ' ', text)
-            # Apply negation handling
-            text = self.handle_negations(text)
+            
+            # Try to apply negation handling
+            try:
+                text = self.handle_negations(text)
+            except Exception as e:
+                logger.error(f"Negation handling failed: {e}")
+                # Continue without negation handling
+            
             # Remove extra whitespace
             text = re.sub(r'\s+', ' ', text).strip()
             return text
@@ -207,6 +242,9 @@ class SentimentEnsemble:
                 try:
                     # Get the corresponding vectorizer
                     vectorizer = self.vectorizers[model_name]
+                    if vectorizer is None:
+                        logger.error(f"No vectorizer available for {model_name}")
+                        continue
                     
                     # Transform text using the model's vectorizer
                     X = vectorizer.transform([cleaned_text])
@@ -225,6 +263,12 @@ class SentimentEnsemble:
                         except Exception as e:
                             logger.error(f"Error combining features for {model_name}: {e}")
                     
+                    # Check for feature count mismatch
+                    expected_features = model.n_features_in_ if hasattr(model, 'n_features_in_') else 0
+                    if expected_features > 0 and X.shape[1] != expected_features:
+                        logger.error(f"Feature mismatch for {model_name}: expected {expected_features}, got {X.shape[1]}")
+                        continue
+                    
                     # Get prediction and probability
                     pred = model.predict(X)[0]
                     prob = model.predict_proba(X)[0]
@@ -238,11 +282,24 @@ class SentimentEnsemble:
                     logger.info(f"{model_name} prediction: {pred} with confidence {confidence}")
                 except Exception as e:
                     logger.error(f"Error getting prediction from {model_name}: {str(e)}")
+                    logger.error(traceback.format_exc())
             
-            # If we couldn't get any predictions, return a default
+            # If we couldn't get any predictions, use a fallback approach
             if not predictions:
                 logger.error("Failed to get predictions from any model")
-                return 1, 0.51, []
+                # Use a simple lexicon-based approach
+                positive_words = ["good", "great", "excellent", "amazing", "awesome", "love", "nice", "enjoy", "like"]
+                negative_words = ["bad", "terrible", "awful", "horrible", "worst", "hate", "dislike", "poor", "waste"]
+                
+                pos_count = sum(1 for word in positive_words if word in cleaned_text)
+                neg_count = sum(1 for word in negative_words if word in cleaned_text)
+                
+                if pos_count > neg_count:
+                    return 1, 0.65, []
+                elif neg_count > pos_count:
+                    return 0, 0.65, []
+                else:
+                    return 1, 0.51, []  # Default positive with low confidence
             
             # Combine predictions using weighted average
             weighted_sum = 0
@@ -283,32 +340,57 @@ class SentimentEnsemble:
             model = self.models[model_type]
             vectorizer = self.vectorizers[model_type]
             
+            # If no vectorizer is available, use a simple approach
+            if vectorizer is None:
+                words = simple_tokenize(text)
+                positive_words = ["good", "great", "excellent", "amazing", "awesome", "love", "nice", "enjoy", "like"]
+                negative_words = ["bad", "terrible", "awful", "horrible", "worst", "hate", "dislike", "poor", "waste"]
+                
+                result = []
+                for word in words:
+                    if word in positive_words:
+                        sentiment = "positive" if prediction == 1 else "negative"
+                        result.append({"word": word, "importance": 80.0, "sentiment": sentiment})
+                    elif word in negative_words:
+                        sentiment = "negative" if prediction == 0 else "positive"
+                        result.append({"word": word, "importance": 80.0, "sentiment": sentiment})
+                
+                return result[:5]
+            
             # Get feature names based on vectorizer type
-            if hasattr(vectorizer, 'get_feature_names_out'):
-                feature_names = vectorizer.get_feature_names_out()
-            else:
-                # Try legacy method for older scikit-learn versions
-                feature_names = vectorizer.get_feature_names() if hasattr(vectorizer, 'get_feature_names') else []
-                if not feature_names:
-                    return []
+            try:
+                if hasattr(vectorizer, 'get_feature_names_out'):
+                    feature_names = vectorizer.get_feature_names_out()
+                else:
+                    # Try legacy method for older scikit-learn versions
+                    feature_names = vectorizer.get_feature_names() if hasattr(vectorizer, 'get_feature_names') else []
+                    if not feature_names:
+                        return []
+            except Exception as e:
+                logger.error(f"Error getting feature names: {e}")
+                return []
             
             # Transform the text
             X = vectorizer.transform([text])
             
             # Get feature importance based on model type
-            if hasattr(model, 'coef_'):  # For logistic regression
-                # For binary classification, get weights for the positive class
-                coefficients = model.coef_[0]
-                # Sort features by importance for the predicted class
-                importance = coefficients if prediction == 1 else -coefficients
-                
-            elif hasattr(model, 'feature_log_prob_'):  # For Naive Bayes
-                # Calculate log probability differences between positive and negative classes
-                importance = model.feature_log_prob_[1] - model.feature_log_prob_[0]
-                if prediction == 0:  # For negative predictions, reverse importance
-                    importance = -importance
-            else:
-                return []  # Unsupported model type
+            try:
+                if hasattr(model, 'coef_'):  # For logistic regression
+                    # For binary classification, get weights for the positive class
+                    coefficients = model.coef_[0]
+                    # Sort features by importance for the predicted class
+                    importance = coefficients if prediction == 1 else -coefficients
+                    
+                elif hasattr(model, 'feature_log_prob_'):  # For Naive Bayes
+                    # Calculate log probability differences between positive and negative classes
+                    importance = model.feature_log_prob_[1] - model.feature_log_prob_[0]
+                    if prediction == 0:  # For negative predictions, reverse importance
+                        importance = -importance
+                else:
+                    return []  # Unsupported model type
+            except Exception as e:
+                logger.error(f"Error extracting feature importance: {e}")
+                return []
             
             # Get non-zero features in the input text
             non_zero_features = X.nonzero()[1]
