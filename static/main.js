@@ -62,14 +62,16 @@ document.addEventListener('DOMContentLoaded', () => {
     function displayResult(result) {
         const sentimentClass = result.sentiment === 'Positive' ? 'positive' : 'negative';
         
-        // Highlight important words in the text
-        let highlightedText = result.text;
-        
         // Create HTML for important words
-        const wordChips = result.important_words.map(wordInfo => {
-            const chipClass = wordInfo.sentiment === 'positive' ? 'positive' : 'negative';
-            return `<span class="word-chip ${chipClass}">${wordInfo.word}</span>`;
-        }).join('');
+        let wordChips = '';
+        if (result.important_words && result.important_words.length > 0) {
+            wordChips = result.important_words.map(wordInfo => {
+                const chipClass = wordInfo.sentiment === 'positive' ? 'positive' : 'negative';
+                return `<span class="word-chip ${chipClass}">${wordInfo.word}</span>`;
+            }).join('');
+        } else {
+            wordChips = '<span class="no-words">No influential words found</span>';
+        }
         
         resultDisplay.innerHTML = `
             <div class="result-card">
@@ -82,7 +84,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <div class="confidence-bar ${sentimentClass}" style="width: ${result.confidence}%"></div>
                 </div>
                 
-                <div class="result-text">"${highlightedText}"</div>
+                <div class="result-text">"${result.text}"</div>
                 
                 <div class="important-words">
                     <h4>Influential Words:</h4>
@@ -165,19 +167,20 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Add focus to the text input on page load
     textInput.focus();
-    // Set up clear history button
-const clearHistoryBtn = document.getElementById('clear-history-btn');
-clearHistoryBtn.addEventListener('click', () => {
-    if (analysisHistory.length === 0) {
-        return; // Nothing to clear
-    }
     
-    if (confirm('Are you sure you want to clear your analysis history?')) {
-        // Clear history array
-        analysisHistory.length = 0;
+    // Set up clear history button
+    const clearHistoryBtn = document.getElementById('clear-history-btn');
+    clearHistoryBtn.addEventListener('click', () => {
+        if (analysisHistory.length === 0) {
+            return; // Nothing to clear
+        }
         
-        // Update display
-        updateHistoryDisplay();
-    }
-});
+        if (confirm('Are you sure you want to clear your analysis history?')) {
+            // Clear history array
+            analysisHistory.length = 0;
+            
+            // Update display
+            updateHistoryDisplay();
+        }
+    });
 });
