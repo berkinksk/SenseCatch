@@ -57,6 +57,26 @@ class SentimentEnsemble:
                 logger.error(f"Error loading model {model_name}: {str(e)}")
                 logger.error(traceback.format_exc())
     
+    def _handle_simple_cases(self, text):
+        """Handle simple obvious cases directly"""
+        text_lower = text.lower()
+        
+        # Direct pattern matching for very obvious cases
+        obvious_positive = ["awesome", "amazing", "excellent", "great", "love", "wonderful", 
+                           "brilliant", "fantastic", "superb", "perfect", "best"]
+        obvious_negative = ["terrible", "awful", "horrible", "hate", "bad", "worst", 
+                           "disappointing", "poor", "waste", "boring", "garbage"]
+        
+        # Check for obvious positive terms without negation
+        if any(term in text_lower for term in obvious_positive) and not any(neg in text_lower for neg in ["not ", "n't ", "don't", "didn't", "doesn't"]):
+            return True, 1, 0.98  # Positive with high confidence
+            
+        # Check for obvious negative terms without negation
+        if any(term in text_lower for term in obvious_negative) and not any(neg in text_lower for neg in ["not ", "n't ", "don't", "didn't", "doesn't"]):
+            return True, 0, 0.98  # Negative with high confidence
+            
+        return False, None, None
+    
     def handle_negations(self, text):
         """Mark negated words to help the model understand negations"""
         try:
@@ -131,6 +151,15 @@ class SentimentEnsemble:
     def predict(self, text):
         """Make ensemble prediction on a single text input"""
         try:
+            # First check for simple obvious cases
+            is_simple_case, prediction, confidence = self._handle_simple_cases(text)
+            if is_simple_case:
+                logger.info(f"Simple case detected: '{text}' -> {prediction} ({confidence*100:.2f}%)")
+                influential_words = [{"word": word, "importance": 95.0, "sentiment": "positive" if prediction == 1 else "negative"} 
+                                    for word in text.lower().split() 
+                                    if word in ("awesome", "amazing", "excellent", "terrible", "awful", "horrible")][:5]
+                return prediction, confidence, influential_words
+            
             # Clean and preprocess the text
             cleaned_text = self.clean_text(text)
             
