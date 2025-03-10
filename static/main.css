@@ -376,3 +376,19 @@ footer a {
 .secondary-btn:hover {
     background-color: #e0e0e0;
 }
+
+/* Add this to your existing main.css */
+.no-words {
+    color: var(--neutral-color);
+    font-style: italic;
+    font-size: 0.85rem;
+}
+
+.word-chip {
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.word-chip:hover {
+    transform: scale(1.05);
+    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+}
