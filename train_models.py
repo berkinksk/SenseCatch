@@ -28,6 +28,7 @@ nltk.download('punkt')
 nltk.download('vader_lexicon')
 nltk.download('sentiwordnet')
 nltk.download('wordnet')
+nltk.download('omw-1.4')
 from nltk.corpus import movie_reviews, stopwords
 from nltk.tokenize import word_tokenize
 
@@ -227,10 +228,32 @@ print("Extracting lexicon features...")
 X_train_lexicon = extract_lexicon_features(X_train)
 X_test_lexicon = extract_lexicon_features(X_test)
 
+# After extracting lexicon features, verify all values are non-negative
+print("Verifying lexicon features are non-negative for MultinomialNB...")
+for features_dict in X_train_lexicon:
+    for key, value in list(features_dict.items()):
+        if isinstance(value, (int, float)) and value < 0:
+            # This shouldn't happen with our updated lexicon features,
+            # but let's make absolutely sure
+            features_dict[key] = 0.0
+
+for features_dict in X_test_lexicon:
+    for key, value in list(features_dict.items()):
+        if isinstance(value, (int, float)) and value < 0:
+            features_dict[key] = 0.0
+
 # Create a DictVectorizer to transform lexicon features
 dict_vectorizer = DictVectorizer()
 X_train_lexicon_vec = dict_vectorizer.fit_transform(X_train_lexicon)
 X_test_lexicon_vec = dict_vectorizer.transform(X_test_lexicon)
+
+# Verify there are no negative values in the lexicon features
+if X_train_lexicon_vec.data.min() < 0:
+    print("Warning: Negative values found in lexicon features, setting them to 0...")
+    X_train_lexicon_vec.data[X_train_lexicon_vec.data < 0] = 0.0
+    
+if X_test_lexicon_vec.data.min() < 0:
+    X_test_lexicon_vec.data[X_test_lexicon_vec.data < 0] = 0.0
 
 # Create feature extractors
 print("Creating feature extractors...")
@@ -276,6 +299,14 @@ X_test_combined_nb = hstack([X_test_counts, X_test_lexicon_vec])
 # Combine features for Logistic Regression
 X_train_combined_lr = hstack([X_train_tfidf, X_train_lexicon_vec])
 X_test_combined_lr = hstack([X_test_tfidf, X_test_lexicon_vec])
+
+# Make sure there are no negative values in the NB training data
+if X_train_combined_nb.data.min() < 0:
+    print("Warning: Negative values found in combined NB features, setting them to 0...")
+    X_train_combined_nb.data[X_train_combined_nb.data < 0] = 0.0
+
+if X_test_combined_nb.data.min() < 0:
+    X_test_combined_nb.data[X_test_combined_nb.data < 0] = 0.0
 
 # Train Naive Bayes model with improved hyperparameters
 print("Training Naive Bayes model...")
@@ -332,9 +363,18 @@ for orig, proc in zip(challenge_examples, challenge_examples_processed):
 challenge_lexicon = extract_lexicon_features(challenge_examples_processed)
 challenge_lexicon_vec = dict_vectorizer.transform(challenge_lexicon)
 
+# Make sure there are no negative values in the challenge features
+if challenge_lexicon_vec.data.min() < 0:
+    challenge_lexicon_vec.data[challenge_lexicon_vec.data < 0] = 0.0
+
 print("Naive Bayes predictions:")
 X_challenge_counts = count_vectorizer.transform(challenge_examples_processed)
 X_challenge_combined_nb = hstack([X_challenge_counts, challenge_lexicon_vec])
+
+# Make sure there are no negative values in the challenge combined features
+if X_challenge_combined_nb.data.min() < 0:
+    X_challenge_combined_nb.data[X_challenge_combined_nb.data < 0] = 0.0
+
 for i, example in enumerate(challenge_examples):
     prediction = nb_model.predict(X_challenge_combined_nb[i:i+1])[0]
     proba = nb_model.predict_proba(X_challenge_combined_nb[i:i+1])[0]
