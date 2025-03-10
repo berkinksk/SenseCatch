@@ -3,11 +3,28 @@ import re
 import os
 import traceback
 import logging
+import nltk
 from ensemble_model import SentimentEnsemble
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
+
+# Set NLTK data path explicitly
+nltk_data_path = os.path.join(os.getcwd(), 'nltk_data')
+if not os.path.exists(nltk_data_path):
+    os.makedirs(nltk_data_path)
+nltk.data.path.insert(0, nltk_data_path)
+
+# Download NLTK data if needed
+try:
+    nltk.download('punkt', download_dir=nltk_data_path)
+    nltk.download('stopwords', download_dir=nltk_data_path)
+    nltk.download('vader_lexicon', download_dir=nltk_data_path)
+    nltk.download('wordnet', download_dir=nltk_data_path)
+    logger.info("NLTK resources downloaded successfully to %s", nltk_data_path)
+except Exception as e:
+    logger.error(f"Error downloading NLTK resources: {str(e)}")
 
 app = Flask(__name__)
 
@@ -21,10 +38,20 @@ except Exception as e:
     logger.error(traceback.format_exc())
     ensemble = None
 
+# Simple fallback tokenization without relying on NLTK
+def simple_tokenize(text):
+    return text.lower().split()
+
 # Function to clean text
 def clean_text(text):
     try:
-        return ensemble.clean_text(text) if ensemble else text.lower()
+        # Convert to lowercase
+        text = text.lower()
+        # Remove special characters but keep apostrophes
+        text = re.sub(r"[^a-z0-9'\\s]", ' ', text)
+        # Remove extra whitespace
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text
     except Exception as e:
         logger.error(f"Error in clean_text: {str(e)}")
         return text.lower()
@@ -39,7 +66,7 @@ def analyze():
         # Get data from request
         data = request.get_json()
         text = data.get('text', '')
-        model_type = data.get('model', 'naive_bayes')  # Default to naive_bayes for now
+        model_type = data.get('model', 'naive_bayes')  # Default to naive_bayes
         
         logger.info(f"Analyzing text: '{text}' with model: {model_type}")
         
@@ -62,7 +89,7 @@ def analyze():
             
             # Create simple influential words for explanation
             important_words = []
-            for word in text.lower().split():
+            for word in simple_tokenize(text):
                 if word in ["awesome", "amazing", "excellent", "great", "good", "love", 
                            "terrible", "awful", "horrible", "hate", "bad", "worst"]:
                     sentiment_type = "positive" if word in ["awesome", "amazing", "excellent", "great", "good", "love"] else "negative"
@@ -83,69 +110,141 @@ def analyze():
                 'important_words': important_words
             })
         
-        # If using ensemble model
-        if model_type == 'ensemble':
-            try:
-                prediction, confidence, important_words = ensemble.predict(text)
-                sentiment = "Positive" if prediction == 1 else "Negative"
-                confidence = confidence * 100  # Convert to percentage
-            except Exception as e:
-                logger.error(f"Error using ensemble model: {str(e)}")
-                logger.error(traceback.format_exc())
-                # Fall back to a specific model
-                model_type = 'naive_bayes'
-                logger.info(f"Falling back to {model_type} model")
-        
-        # If not using ensemble or ensemble failed
-        if model_type != 'ensemble' or 'sentiment' not in locals():
-            # Check if the selected model is available
+        # Try using more advanced analysis with proper error handling
+        try:
+            # Check if model exists
             if model_type not in ensemble.models:
-                logger.error(f"Model {model_type} not found in ensemble")
                 return jsonify({
                     'error': f'Model {model_type} is not available.'
                 }), 404
             
-            # Use the specific model
+            # Get the model and vectorizer
             model = ensemble.models[model_type]
             vectorizer = ensemble.vectorizers[model_type]
             
-            # Vectorize the text
-            X = vectorizer.transform([cleaned_text])
-            
-            # Make prediction
-            prediction = model.predict(X)[0]
-            sentiment = "Positive" if prediction == 1 else "Negative"
-            
-            # Get prediction probability
+            # Try to handle the feature mismatch
             try:
-                proba = model.predict_proba(X)[0]
-                confidence = proba[1] * 100 if prediction == 1 else proba[0] * 100
-            except AttributeError as e:
-                logger.error(f"Error getting prediction probability: {str(e)}")
-                confidence = 85.0  # Fallback confidence
-            
-            # Get important words
-            try:
-                important_words = ensemble._extract_influential_words(cleaned_text, prediction, model_type)
+                # Vectorize the text
+                X = vectorizer.transform([cleaned_text])
+                
+                # If the model expects more features than we have, use a safer approach
+                expected_features = model.n_features_in_ if hasattr(model, 'n_features_in_') else 0
+                if expected_features > X.shape[1]:
+                    logger.warning(f"Feature mismatch: model expects {expected_features}, but got {X.shape[1]}")
+                    # Fall back to simple case analysis
+                    return analyze_simple_case(text, model_type)
+                
+                # Make prediction
+                prediction = model.predict(X)[0]
+                sentiment = "Positive" if prediction == 1 else "Negative"
+                
+                # Get prediction probability
+                try:
+                    proba = model.predict_proba(X)[0]
+                    confidence = proba[1] * 100 if prediction == 1 else proba[0] * 100
+                except Exception as e:
+                    logger.error(f"Error getting prediction probability: {str(e)}")
+                    confidence = 75.0  # More moderate fallback confidence
+                
+                # Get important words
+                try:
+                    important_words = ensemble._extract_influential_words(cleaned_text, prediction, model_type)
+                except Exception as e:
+                    logger.error(f"Error extracting influential words: {str(e)}")
+                    important_words = []
+                
+                # Return prediction
+                return jsonify({
+                    'text': text,
+                    'sentiment': sentiment,
+                    'confidence': round(confidence, 2),
+                    'model': model_type,
+                    'important_words': important_words
+                })
             except Exception as e:
-                logger.error(f"Error extracting influential words: {str(e)}")
-                important_words = []
-        
-        # Return prediction
-        return jsonify({
-            'text': text,
-            'sentiment': sentiment,
-            'confidence': round(confidence, 2),
-            'model': model_type,
-            'important_words': important_words
-        })
-        
+                logger.error(f"Error in model prediction: {str(e)}")
+                # Fall back to simple case analysis
+                return analyze_simple_case(text, model_type)
+        except Exception as e:
+            logger.error(f"Error in advanced analysis: {str(e)}")
+            logger.error(traceback.format_exc())
+            # Fall back to simple case analysis
+            return analyze_simple_case(text, model_type)
     except Exception as e:
         logger.error(f"Unhandled exception in analyze route: {str(e)}")
         logger.error(traceback.format_exc())
         return jsonify({
             'error': f'Server error: {str(e)}. Please try again.'
         }), 500
+
+def analyze_simple_case(text, model_type):
+    """Fallback analysis when model prediction fails"""
+    # Simple rule-based analysis
+    text_lower = text.lower()
+    
+    # Check for obvious positive terms
+    positive_terms = ["good", "great", "excellent", "amazing", "awesome", "love", "nice", "enjoy", "like", "best"]
+    negative_terms = ["bad", "terrible", "awful", "horrible", "worst", "hate", "dislike", "poor", "waste", "boring"]
+    
+    pos_count = sum(1 for term in positive_terms if term in text_lower)
+    neg_count = sum(1 for term in negative_terms if term in text_lower)
+    
+    # Check for negation
+    negations = ["not", "don't", "doesn't", "didn't", "no", "never"]
+    has_negation = any(neg in text_lower for neg in negations)
+    
+    # Simple logic for sentiment
+    if has_negation:
+        # Negation flips the sentiment
+        if pos_count > neg_count:
+            sentiment = "Negative"
+            confidence = min(65 + (pos_count * 5), 90)
+        elif neg_count > pos_count:
+            sentiment = "Positive"
+            confidence = min(65 + (neg_count * 5), 90)
+        else:
+            # No clear sentiment with negation
+            sentiment = "Negative" if "not" in text_lower else "Positive"
+            confidence = 60
+    else:
+        if pos_count > neg_count:
+            sentiment = "Positive"
+            confidence = min(70 + (pos_count * 5), 95)
+        elif neg_count > pos_count:
+            sentiment = "Negative"
+            confidence = min(70 + (neg_count * 5), 95)
+        else:
+            # Neutral or unclear sentiment
+            sentiment = "Positive"  # Default positive
+            confidence = 55
+    
+    # Generate simple word importance
+    important_words = []
+    words = simple_tokenize(text)
+    
+    for word in words:
+        if word in positive_terms:
+            important_words.append({
+                "word": word,
+                "importance": 80.0,
+                "sentiment": "positive" if not has_negation else "negative"
+            })
+        elif word in negative_terms:
+            important_words.append({
+                "word": word,
+                "importance": 80.0,
+                "sentiment": "negative" if not has_negation else "positive"
+            })
+    
+    important_words = important_words[:5]  # Limit to 5 words
+    
+    return jsonify({
+        'text': text,
+        'sentiment': sentiment,
+        'confidence': round(confidence, 2),
+        'model': model_type + " (fallback)",
+        'important_words': important_words
+    })
 
 if __name__ == '__main__':
     app.run(debug=True)
