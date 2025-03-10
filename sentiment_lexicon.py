@@ -1,12 +1,13 @@
 """
-Simplified sentiment lexicon utilities for SenseCatch
-Only uses VADER and custom lexicon, avoiding SentiWordNet
+Sentiment lexicon utilities for SenseCatch
+Provides pre-defined sentiment scores for words to enhance model accuracy
 """
 import os
 import json
 import re
 import logging
 from nltk.sentiment.vader import SentimentIntensityAnalyzer
+from nltk.corpus import sentiwordnet as swn
 import nltk
 
 # Configure logging
@@ -16,6 +17,9 @@ logger = logging.getLogger(__name__)
 # Download necessary NLTK data
 try:
     nltk.download('vader_lexicon', quiet=True)
+    nltk.download('sentiwordnet', quiet=True)
+    nltk.download('wordnet', quiet=True)
+    nltk.download('omw-1.4', quiet=True)
     logger.info("NLTK resources downloaded successfully")
 except Exception as e:
     logger.error(f"Error downloading NLTK resources: {e}")
@@ -129,33 +133,95 @@ class SentimentLexiconFeatures:
         words = re.findall(r'\b\w+\b', text)
         
         if not words:
-            return 0.0
+            return 0.0, 0.0
         
-        # Calculate average sentiment
-        total_score = 0.0
+        # Calculate separate positive and negative scores
+        positive_score = 0.0
+        negative_score = 0.0
         found_words = 0
         
         for word in words:
             if word in self.custom_lexicon:
-                total_score += self.custom_lexicon[word]
+                score = self.custom_lexicon[word]
+                if score > 0:
+                    positive_score += score
+                else:
+                    # Store the absolute value of negative score
+                    negative_score += abs(score)
                 found_words += 1
         
-        # Return normalized score or 0 if no words found
-        return total_score / max(found_words, 1) if found_words > 0 else 0.0
+        # Return normalized scores or 0 if no words found
+        if found_words > 0:
+            return positive_score / found_words, negative_score / found_words
+        return 0.0, 0.0
+    
+    def get_sentiwordnet_score(self, text):
+        """Calculate sentiment score using SentiWordNet"""
+        try:
+            # Check if we have the required resources
+            try:
+                # Try to import the necessary resource
+                from nltk.corpus import wordnet
+                # If we get here, wordnet is available
+            except (ImportError, LookupError) as e:
+                logger.warning(f"WordNet resources not fully available, skipping SentiWordNet score: {e}")
+                return 0.0, 0.0
+            
+            words = re.findall(r'\b\w+\b', text.lower())
+            pos_score = 0.0
+            neg_score = 0.0
+            count = 0
+            
+            for word in words:
+                try:
+                    synsets = list(swn.senti_synsets(word))
+                    if synsets:
+                        # Average over all synsets
+                        word_pos = sum(s.pos_score() for s in synsets) / len(synsets)
+                        word_neg = sum(s.neg_score() for s in synsets) / len(synsets)
+                        pos_score += word_pos
+                        neg_score += word_neg
+                        count += 1
+                except Exception as e:
+                    # Skip words that cause problems
+                    logger.debug(f"Error processing word '{word}' in SentiWordNet: {e}")
+                    continue
+            
+            if count == 0:
+                return 0.0, 0.0
+            
+            # Return normalized scores
+            return pos_score / count, neg_score / count
+        except Exception as e:
+            logger.error(f"Error getting SentiWordNet score: {e}")
+            return 0.0, 0.0
     
     def extract_all_features(self, text):
         """Extract all sentiment lexicon features for a text"""
         features = {}
         
-        # Get VADER scores
+        # Get VADER scores - these are already non-negative
         vader_scores = self.get_vader_scores(text)
-        features['vader_compound'] = vader_scores['compound']
         features['vader_pos'] = vader_scores['pos']
         features['vader_neg'] = vader_scores['neg']
         features['vader_neu'] = vader_scores['neu']
+        # Convert compound to positive and negative features
+        if vader_scores['compound'] > 0:
+            features['vader_compound_pos'] = vader_scores['compound']
+            features['vader_compound_neg'] = 0
+        else:
+            features['vader_compound_pos'] = 0
+            features['vader_compound_neg'] = abs(vader_scores['compound'])
         
-        # Get custom lexicon score
-        features['custom_score'] = self.get_custom_lexicon_score(text)
+        # Get custom lexicon score with positive and negative components
+        custom_pos, custom_neg = self.get_custom_lexicon_score(text)
+        features['custom_pos'] = custom_pos
+        features['custom_neg'] = custom_neg
+        
+        # Get SentiWordNet score with positive and negative components
+        senti_pos, senti_neg = self.get_sentiwordnet_score(text)
+        features['sentiwordnet_pos'] = senti_pos
+        features['sentiwordnet_neg'] = senti_neg
         
         return features
     
