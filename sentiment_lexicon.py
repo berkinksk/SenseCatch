@@ -146,15 +146,29 @@ class SentimentLexiconFeatures:
         # Return normalized score or 0 if no words found
         return total_score / max(found_words, 1) if found_words > 0 else 0.0
     
-    def get_sentiwordnet_score(self, text):
-        """Calculate sentiment score using SentiWordNet"""
+    # In sentiment_lexicon.py, update the get_sentiwordnet_score method:
+
+# In sentiment_lexicon.py, update the get_sentiwordnet_score method:
+
+def get_sentiwordnet_score(self, text):
+    """Calculate sentiment score using SentiWordNet"""
+    try:
+        # Check if we have the required resources
         try:
-            words = re.findall(r'\b\w+\b', text.lower())
-            pos_score = 0.0
-            neg_score = 0.0
-            count = 0
+            # Try to import the necessary resource
+            from nltk.corpus import wordnet
+            # If we get here, wordnet is available
+        except (ImportError, LookupError) as e:
+            logger.warning(f"WordNet resources not fully available, skipping SentiWordNet score: {e}")
+            return 0.0
             
-            for word in words:
+        words = re.findall(r'\b\w+\b', text.lower())
+        pos_score = 0.0
+        neg_score = 0.0
+        count = 0
+        
+        for word in words:
+            try:
                 synsets = list(swn.senti_synsets(word))
                 if synsets:
                     # Average over all synsets
@@ -163,15 +177,19 @@ class SentimentLexiconFeatures:
                     pos_score += word_pos
                     neg_score += word_neg
                     count += 1
-            
-            if count == 0:
-                return 0.0
-            
-            # Return normalized difference between positive and negative
-            return (pos_score - neg_score) / count
-        except Exception as e:
-            logger.error(f"Error getting SentiWordNet score: {e}")
+            except Exception as e:
+                # Skip words that cause problems
+                logger.debug(f"Error processing word '{word}' in SentiWordNet: {e}")
+                continue
+        
+        if count == 0:
             return 0.0
+        
+        # Return normalized difference between positive and negative
+        return (pos_score - neg_score) / count
+    except Exception as e:
+        logger.error(f"Error getting SentiWordNet score: {e}")
+        return 0.0
     
     def extract_all_features(self, text):
         """Extract all sentiment lexicon features for a text"""
