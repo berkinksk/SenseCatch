@@ -82,7 +82,8 @@ print(f"Testing set size: {len(X_test)}")
 
 # Create feature extractors
 print("Creating feature extractors...")
-stop_words = set(stopwords.words('english'))
+# Using string 'english' instead of a set for compatibility
+stop_words = 'english'
 
 # CountVectorizer with improved parameters
 count_vectorizer = CountVectorizer(
