@@ -30,6 +30,7 @@ class SentimentEnsemble:
         """Initialize the ensemble with loaded models"""
         self.models = {}
         self.vectorizers = {}
+        self.dict_vectorizers = {}
         self.model_weights = {
             'naive_bayes': 0.6,
             'logistic_regression': 0.4,
@@ -47,7 +48,14 @@ class SentimentEnsemble:
             try:
                 if os.path.exists(path):
                     with open(path, 'rb') as f:
-                        model, vectorizer = pickle.load(f)
+                        # Check if file contains 3 objects (model, text_vectorizer, dict_vectorizer)
+                        try:
+                            model, vectorizer, dict_vec = pickle.load(f)
+                            self.dict_vectorizers[model_name] = dict_vec
+                        except ValueError:
+                            # Old format with just model and vectorizer
+                            model, vectorizer = pickle.load(f) 
+                        
                         self.models[model_name] = model
                         self.vectorizers[model_name] = vectorizer
                         logger.info(f"Loaded model: {model_name}")
@@ -56,6 +64,15 @@ class SentimentEnsemble:
             except Exception as e:
                 logger.error(f"Error loading model {model_name}: {str(e)}")
                 logger.error(traceback.format_exc())
+        
+        # Initialize sentiment lexicon
+        try:
+            from sentiment_lexicon import SentimentLexiconFeatures
+            self.lexicon = SentimentLexiconFeatures()
+            logger.info("Sentiment lexicon initialized")
+        except Exception as e:
+            logger.error(f"Error initializing sentiment lexicon: {e}")
+            self.lexicon = None
     
     def _handle_simple_cases(self, text):
         """Handle simple obvious cases directly"""
@@ -175,6 +192,15 @@ class SentimentEnsemble:
                 # Return a default prediction with low confidence
                 return 1, 0.51, []
             
+            # Extract lexicon features if available
+            lexicon_features = None
+            if hasattr(self, 'lexicon') and self.lexicon:
+                try:
+                    lexicon_features = self.lexicon.extract_all_features(text)
+                    logger.info(f"Lexicon features extracted: {lexicon_features}")
+                except Exception as e:
+                    logger.error(f"Error extracting lexicon features: {e}")
+            
             # Get predictions from each model
             predictions = {}
             for model_name, model in self.models.items():
@@ -184,6 +210,20 @@ class SentimentEnsemble:
                     
                     # Transform text using the model's vectorizer
                     X = vectorizer.transform([cleaned_text])
+                    
+                    # If we have lexicon features and dict vectorizer, use them
+                    if lexicon_features and model_name in self.dict_vectorizers:
+                        try:
+                            # Transform lexicon features
+                            dict_vec = self.dict_vectorizers[model_name]
+                            X_lexicon = dict_vec.transform([lexicon_features])
+                            
+                            # Combine with text features
+                            from scipy.sparse import hstack
+                            X = hstack([X, X_lexicon])
+                            logger.info(f"Combined text and lexicon features for {model_name}")
+                        except Exception as e:
+                            logger.error(f"Error combining features for {model_name}: {e}")
                     
                     # Get prediction and probability
                     pred = model.predict(X)[0]
