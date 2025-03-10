@@ -21,17 +21,59 @@ print("Downloading NLTK data...")
 # Download required NLTK data
 nltk.download('movie_reviews')
 nltk.download('stopwords')
+nltk.download('punkt')  # For tokenization
 from nltk.corpus import movie_reviews, stopwords
+from nltk.tokenize import word_tokenize
 
-# Function for text cleaning
+# ==== NEW: IMPROVED TEXT PREPROCESSING WITH NEGATION HANDLING ====
+
+def handle_negations(text):
+    """
+    Mark negated words to help the model understand negations.
+    Example: "not bad" -> "not bad_NEG"
+    """
+    # Create a list of negation words
+    negation_words = ['not', 'no', 'never', 'don\'t', 'doesn\'t', 'didn\'t', 
+                     'can\'t', 'couldn\'t', 'shouldn\'t', 'wouldn\'t', 'isn\'t', 
+                     'aren\'t', 'ain\'t', 'wasn\'t', 'weren\'t', 'haven\'t', 
+                     'hasn\'t', 'hadn\'t', 'won\'t', 'nor', 'neither']
+    
+    # Tokenize the text
+    words = word_tokenize(text.lower())
+    
+    # Process negations
+    in_negation = False
+    result = []
+    
+    for word in words:
+        if word in negation_words:
+            in_negation = True
+            result.append(word)
+        elif word in ['.', '!', '?', ',', ';', ':', ')', ']']:
+            # End negation scope at punctuation
+            in_negation = False
+            result.append(word)
+        elif in_negation and word not in ['and', 'or', 'the', 'a', 'an', 'to', 'of', 'in']:
+            # Mark negated content words
+            result.append(word + '_NEG')
+        else:
+            result.append(word)
+    
+    return ' '.join(result)
+
 def clean_text(text):
+    """Enhanced text cleaning with negation handling"""
     # Convert to lowercase
     text = text.lower()
-    # Remove special characters
-    text = re.sub(r'[^\w\s]', ' ', text)
+    # Remove special characters but keep apostrophes for negations
+    text = re.sub(r'[^\w\s\']', ' ', text)
+    # Apply negation handling
+    text = handle_negations(text)
     # Remove extra whitespace
     text = re.sub(r'\s+', ' ', text).strip()
     return text
+
+# ==== END NEW PREPROCESSING CODE ====
 
 print("Preparing data from NLTK movie reviews...")
 
@@ -54,10 +96,7 @@ print(f"Dataset loaded: {len(df)} reviews")
 print(f"Positive reviews: {sum(df['sentiment'])}")
 print(f"Negative reviews: {len(df) - sum(df['sentiment'])}")
 
-# ===== NEW CODE: SPECIALIZED DATASETS =====
-
-# 1. Negation Pattern Examples
-# These help the model learn to correctly handle negated phrases
+# Specialized datasets as before
 print("Adding specialized negation examples...")
 negation_examples = [
     {"text": "i don't think it was boring", "sentiment": 1},
@@ -82,8 +121,6 @@ negation_examples = [
     {"text": "can't say i enjoyed this movie", "sentiment": 0},
 ]
 
-# 2. Mental Health/Emotional Content Examples
-# These help ensure harmful/negative emotional content is correctly classified
 print("Adding mental health/emotional content examples...")
 emotional_examples = [
     {"text": "i want to hurt myself", "sentiment": 0},
@@ -103,8 +140,6 @@ emotional_examples = [
     {"text": "i'm a failure", "sentiment": 0},
 ]
 
-# 3. Film Terminology Examples
-# Help with movie-specific terminology that can be misunderstood
 print("Adding film terminology examples...")
 film_examples = [
     {"text": "this film is so underrated", "sentiment": 1},
@@ -119,8 +154,6 @@ film_examples = [
     {"text": "heavy-handed film", "sentiment": 0},
 ]
 
-# 4. High-Confidence Examples
-# Add obviously positive/negative examples to help calibrate confidence scores
 print("Adding high-confidence calibration examples...")
 obvious_examples = [
     {"text": "this movie was amazing fantastic wonderful incredible brilliant loved it", "sentiment": 1},
@@ -137,15 +170,19 @@ obvious_examples = [
     {"text": "one of the worst films ever made without question", "sentiment": 0},
 ]
 
+# Process all specialized examples with the new preprocessing
+for examples in [negation_examples, emotional_examples, film_examples, obvious_examples]:
+    for example in examples:
+        example["text"] = clean_text(example["text"])
+
 # Combine all specialized examples
 specialized_examples = pd.DataFrame(negation_examples + emotional_examples + film_examples)
 
-# Add specialized examples multiple times to increase their impact on training
-# Add them 10 times to make sure they have significant weight in the model training
+# Add specialized examples multiple times
 for _ in range(10):
     df = pd.concat([df, specialized_examples], ignore_index=True)
 
-# Add obvious examples even more times (20x) for confidence calibration
+# Add obvious examples even more times for confidence calibration
 obvious_df = pd.DataFrame(obvious_examples)
 for _ in range(20):
     df = pd.concat([df, obvious_df], ignore_index=True)
@@ -153,8 +190,6 @@ for _ in range(20):
 print(f"Final dataset size after adding specialized examples: {len(df)}")
 print(f"Final positive examples: {sum(df['sentiment'])}")
 print(f"Final negative examples: {len(df) - sum(df['sentiment'])}")
-
-# ===== END OF NEW CODE =====
 
 # Split text and labels
 texts = df['text'].values
@@ -170,23 +205,22 @@ print(f"Testing set size: {len(X_test)}")
 
 # Create feature extractors
 print("Creating feature extractors...")
-# Using string 'english' instead of a set for compatibility
 stop_words = 'english'
 
 # CountVectorizer with improved parameters
 count_vectorizer = CountVectorizer(
-    max_features=10000, 
-    min_df=3, 
+    max_features=15000,  # Increased from 10000 to capture more negated terms
+    min_df=2,  # Reduced from 3 to include more rare negated features
     max_df=0.9,
-    ngram_range=(1, 2),  # Include unigrams and bigrams
+    ngram_range=(1, 3),  # Increased from (1,2) to capture negation phrases
     stop_words=stop_words,
     strip_accents='unicode'
 )
 
 # TfidfVectorizer with improved parameters
 tfidf_vectorizer = TfidfVectorizer(
-    max_features=10000, 
-    min_df=3, 
+    max_features=15000,  # Increased to match count_vectorizer
+    min_df=2,  # Reduced to match count_vectorizer
     max_df=0.9,
     ngram_range=(1, 3),  # Include unigrams, bigrams, and trigrams
     stop_words=stop_words,
@@ -208,15 +242,15 @@ print(f"TfidfVectorizer vocabulary size: {len(tfidf_vectorizer.vocabulary_)}")
 
 # Train Naive Bayes model with improved hyperparameters
 print("Training Naive Bayes model...")
-nb_model = MultinomialNB(alpha=0.1)  # Slightly reduce smoothing
+nb_model = MultinomialNB(alpha=0.1)
 nb_model.fit(X_train_counts, y_train)
 
 # Train Logistic Regression model with improved hyperparameters
 print("Training Logistic Regression model...")
 lr_model = LogisticRegression(
-    C=5.0,  # Increase regularization strength
+    C=5.0,
     max_iter=1000,
-    class_weight='balanced',  # Handle class imbalance
+    class_weight='balanced',
     solver='liblinear'
 )
 lr_model.fit(X_train_tfidf, y_train)
@@ -248,8 +282,17 @@ challenge_examples = [
     "This was the worst film I've ever seen, terrible acting."
 ]
 
+# Process the challenge examples with negation handling
+challenge_examples_processed = [clean_text(text) for text in challenge_examples]
+
+print("Original vs Processed examples:")
+for orig, proc in zip(challenge_examples, challenge_examples_processed):
+    print(f"Original: \"{orig}\"")
+    print(f"Processed: \"{proc}\"")
+    print()
+
 print("Naive Bayes predictions:")
-X_challenge_counts = count_vectorizer.transform(challenge_examples)
+X_challenge_counts = count_vectorizer.transform(challenge_examples_processed)
 for i, example in enumerate(challenge_examples):
     prediction = nb_model.predict(X_challenge_counts[i:i+1])[0]
     proba = nb_model.predict_proba(X_challenge_counts[i:i+1])[0]
@@ -258,7 +301,7 @@ for i, example in enumerate(challenge_examples):
     print(f'"{example}" => {sentiment} ({confidence*100:.2f}% confidence)')
 
 print("\nLogistic Regression predictions:")
-X_challenge_tfidf = tfidf_vectorizer.transform(challenge_examples)
+X_challenge_tfidf = tfidf_vectorizer.transform(challenge_examples_processed)
 for i, example in enumerate(challenge_examples):
     prediction = lr_model.predict(X_challenge_tfidf[i:i+1])[0]
     proba = lr_model.predict_proba(X_challenge_tfidf[i:i+1])[0]
@@ -275,4 +318,3 @@ with open('models/logistic_regression.pkl', 'wb') as f:
     pickle.dump((lr_model, tfidf_vectorizer), f)
 
 print("Models trained and saved successfully!")
-print("\nYou can now run the Flask application with 'python app.py'")
