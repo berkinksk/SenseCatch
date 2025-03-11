@@ -1,46 +1,54 @@
+import os
+import logging
 from flask import Flask, request, jsonify, render_template
 import re
-import os
 import traceback
-import logging
-import nltk
-from ensemble_model import SentimentEnsemble
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
-# Set NLTK data path explicitly
-nltk_data_path = os.path.join(os.getcwd(), 'nltk_data')
-if not os.path.exists(nltk_data_path):
-    os.makedirs(nltk_data_path)
-nltk.data.path.insert(0, nltk_data_path)
-
-# Download NLTK data if needed
-try:
-    nltk.download('punkt', download_dir=nltk_data_path)
-    nltk.download('stopwords', download_dir=nltk_data_path)
-    nltk.download('vader_lexicon', download_dir=nltk_data_path)
-    nltk.download('wordnet', download_dir=nltk_data_path)
-    logger.info(f"NLTK resources downloaded successfully to {nltk_data_path}")
-except Exception as e:
-    logger.error(f"Error downloading NLTK resources: {str(e)}")
-
+# Create the Flask app first, in case there are errors with other imports
 app = Flask(__name__)
 
-# Initialize the ensemble model
+# Set NLTK data path explicitly
+nltk_data_path = os.path.join(os.getcwd(), 'nltk_data')
+os.environ['NLTK_DATA'] = nltk_data_path
+if not os.path.exists(nltk_data_path):
+    os.makedirs(nltk_data_path)
+
+# Try to import nltk, but handle the error if it fails
 try:
+    import nltk
+    nltk.data.path.insert(0, nltk_data_path)
+    
+    # Download essential NLTK data if not available
+    try:
+        nltk.download('punkt', download_dir=nltk_data_path, quiet=True)
+        nltk.download('stopwords', download_dir=nltk_data_path, quiet=True)
+        nltk.download('vader_lexicon', download_dir=nltk_data_path, quiet=True)
+        nltk.download('wordnet', download_dir=nltk_data_path, quiet=True)
+        logger.info(f"NLTK resources downloaded successfully to {nltk_data_path}")
+    except Exception as e:
+        logger.error(f"Error downloading NLTK resources: {str(e)}")
+except ImportError:
+    logger.warning("NLTK package not available. Fallback tokenization will be used.")
+    nltk = None
+
+# Simple fallback tokenization without relying on NLTK
+def simple_tokenize(text):
+    return text.lower().split()
+
+# Import ensemble model with error handling
+ensemble = None
+try:
+    from ensemble_model import SentimentEnsemble
     logger.info("Initializing ensemble model...")
     ensemble = SentimentEnsemble()
     logger.info("Ensemble model initialized successfully")
 except Exception as e:
     logger.error(f"Error initializing ensemble model: {str(e)}")
     logger.error(traceback.format_exc())
-    ensemble = None
-
-# Simple fallback tokenization without relying on NLTK
-def simple_tokenize(text):
-    return text.lower().split()
 
 # Function to clean text
 def clean_text(text):
@@ -134,62 +142,8 @@ def analyze():
             logger.error(f"Error in ensemble prediction: {str(e)}")
             logger.error(traceback.format_exc())
             
-            # Try using a specific model
-            try:
-                # Check if the selected model is available
-                if model_type not in ensemble.models:
-                    logger.error(f"Model {model_type} not found in ensemble")
-                    return jsonify({
-                        'error': f'Model {model_type} is not available.'
-                    }), 404
-                
-                # Use the specific model
-                model = ensemble.models[model_type]
-                vectorizer = ensemble.vectorizers[model_type]
-                
-                # Vectorize the text
-                X = vectorizer.transform([cleaned_text])
-                
-                # Check if there's a feature mismatch and fix it
-                if hasattr(model, 'n_features_in_'):
-                    expected_features = model.n_features_in_
-                    if X.shape[1] != expected_features:
-                        logger.warning(f"Feature mismatch: model expects {expected_features}, but got {X.shape[1]}")
-                        # Fall back to simple case analysis
-                        return analyze_simple_case(text, model_type)
-                
-                # Make prediction
-                prediction = model.predict(X)[0]
-                sentiment = "Positive" if prediction == 1 else "Negative"
-                
-                # Get prediction probability
-                try:
-                    proba = model.predict_proba(X)[0]
-                    confidence = proba[1] * 100 if prediction == 1 else proba[0] * 100
-                except AttributeError as e:
-                    logger.error(f"Error getting prediction probability: {str(e)}")
-                    confidence = 75.0  # Fallback confidence
-                
-                # Get important words
-                try:
-                    important_words = ensemble._extract_influential_words(cleaned_text, prediction, model_type)
-                except Exception as e:
-                    logger.error(f"Error extracting influential words: {str(e)}")
-                    important_words = []
-                
-                # Return prediction
-                return jsonify({
-                    'text': text,
-                    'sentiment': sentiment,
-                    'confidence': round(confidence, 2),
-                    'model': model_type,
-                    'important_words': important_words
-                })
-            except Exception as nested_e:
-                logger.error(f"Error in direct model prediction: {str(nested_e)}")
-                logger.error(traceback.format_exc())
-                # Fall back to simple case analysis
-                return analyze_simple_case(text, model_type)
+            # Fall back to simple case analysis
+            return analyze_simple_case(text, model_type)
     except Exception as e:
         logger.error(f"Unhandled exception in analyze route: {str(e)}")
         logger.error(traceback.format_exc())
