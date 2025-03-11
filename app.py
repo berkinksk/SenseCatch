@@ -22,7 +22,7 @@ try:
     nltk.download('stopwords', download_dir=nltk_data_path)
     nltk.download('vader_lexicon', download_dir=nltk_data_path)
     nltk.download('wordnet', download_dir=nltk_data_path)
-    logger.info("NLTK resources downloaded successfully to %s", nltk_data_path)
+    logger.info(f"NLTK resources downloaded successfully to {nltk_data_path}")
 except Exception as e:
     logger.error(f"Error downloading NLTK resources: {str(e)}")
 
@@ -45,7 +45,11 @@ def simple_tokenize(text):
 # Function to clean text
 def clean_text(text):
     try:
-        # Convert to lowercase
+        # Delegate to ensemble's clean_text if available
+        if ensemble and hasattr(ensemble, 'clean_text'):
+            return ensemble.clean_text(text)
+        
+        # Fallback cleaning
         text = text.lower()
         # Remove special characters but keep apostrophes
         text = re.sub(r"[^a-z0-9'\\s]", ' ', text)
@@ -112,27 +116,47 @@ def analyze():
         
         # Try using more advanced analysis with proper error handling
         try:
-            # Check if model exists
-            if model_type not in ensemble.models:
-                return jsonify({
-                    'error': f'Model {model_type} is not available.'
-                }), 404
+            # Try using the ensemble's predict method first
+            # This now includes padding to handle feature mismatches
+            prediction, confidence, important_words = ensemble.predict(text)
+            sentiment = "Positive" if prediction == 1 else "Negative"
+            confidence = confidence * 100  # Convert to percentage
             
-            # Get the model and vectorizer
-            model = ensemble.models[model_type]
-            vectorizer = ensemble.vectorizers[model_type]
+            # Return the prediction
+            return jsonify({
+                'text': text,
+                'sentiment': sentiment,
+                'confidence': round(confidence, 2),
+                'model': model_type,
+                'important_words': important_words
+            })
+        except Exception as e:
+            logger.error(f"Error in ensemble prediction: {str(e)}")
+            logger.error(traceback.format_exc())
             
-            # Try to handle the feature mismatch
+            # Try using a specific model
             try:
+                # Check if the selected model is available
+                if model_type not in ensemble.models:
+                    logger.error(f"Model {model_type} not found in ensemble")
+                    return jsonify({
+                        'error': f'Model {model_type} is not available.'
+                    }), 404
+                
+                # Use the specific model
+                model = ensemble.models[model_type]
+                vectorizer = ensemble.vectorizers[model_type]
+                
                 # Vectorize the text
                 X = vectorizer.transform([cleaned_text])
                 
-                # If the model expects more features than we have, use a safer approach
-                expected_features = model.n_features_in_ if hasattr(model, 'n_features_in_') else 0
-                if expected_features > X.shape[1]:
-                    logger.warning(f"Feature mismatch: model expects {expected_features}, but got {X.shape[1]}")
-                    # Fall back to simple case analysis
-                    return analyze_simple_case(text, model_type)
+                # Check if there's a feature mismatch and fix it
+                if hasattr(model, 'n_features_in_'):
+                    expected_features = model.n_features_in_
+                    if X.shape[1] != expected_features:
+                        logger.warning(f"Feature mismatch: model expects {expected_features}, but got {X.shape[1]}")
+                        # Fall back to simple case analysis
+                        return analyze_simple_case(text, model_type)
                 
                 # Make prediction
                 prediction = model.predict(X)[0]
@@ -142,9 +166,9 @@ def analyze():
                 try:
                     proba = model.predict_proba(X)[0]
                     confidence = proba[1] * 100 if prediction == 1 else proba[0] * 100
-                except Exception as e:
+                except AttributeError as e:
                     logger.error(f"Error getting prediction probability: {str(e)}")
-                    confidence = 75.0  # More moderate fallback confidence
+                    confidence = 75.0  # Fallback confidence
                 
                 # Get important words
                 try:
@@ -161,15 +185,11 @@ def analyze():
                     'model': model_type,
                     'important_words': important_words
                 })
-            except Exception as e:
-                logger.error(f"Error in model prediction: {str(e)}")
+            except Exception as nested_e:
+                logger.error(f"Error in direct model prediction: {str(nested_e)}")
+                logger.error(traceback.format_exc())
                 # Fall back to simple case analysis
                 return analyze_simple_case(text, model_type)
-        except Exception as e:
-            logger.error(f"Error in advanced analysis: {str(e)}")
-            logger.error(traceback.format_exc())
-            # Fall back to simple case analysis
-            return analyze_simple_case(text, model_type)
     except Exception as e:
         logger.error(f"Unhandled exception in analyze route: {str(e)}")
         logger.error(traceback.format_exc())
@@ -238,6 +258,7 @@ def analyze_simple_case(text, model_type):
     
     important_words = important_words[:5]  # Limit to 5 words
     
+    logger.info(f"Using fallback analysis: {sentiment} with {confidence}% confidence")
     return jsonify({
         'text': text,
         'sentiment': sentiment,
