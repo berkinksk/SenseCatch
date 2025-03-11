@@ -13,22 +13,33 @@ from sklearn.metrics import accuracy_score, classification_report, confusion_mat
 from sklearn.pipeline import Pipeline
 from scipy.sparse import hstack
 from sentiment_lexicon import SentimentLexiconFeatures
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Create models directory if it doesn't exist
 if not os.path.exists('models'):
     os.makedirs('models')
 
+# Set NLTK data path explicitly
+nltk_data_path = os.path.join(os.getcwd(), 'nltk_data')
+os.makedirs(nltk_data_path, exist_ok=True)
+nltk.data.path.insert(0, nltk_data_path)
+
 print("Starting model training process...")
 print("Downloading NLTK data...")
 
 # Download required NLTK data
-nltk.download('movie_reviews')
-nltk.download('stopwords')
-nltk.download('punkt')
-nltk.download('vader_lexicon')
-nltk.download('sentiwordnet')
-nltk.download('wordnet')
-nltk.download('omw-1.4')
+nltk.download('movie_reviews', download_dir=nltk_data_path)
+nltk.download('stopwords', download_dir=nltk_data_path)
+nltk.download('punkt', download_dir=nltk_data_path)
+nltk.download('vader_lexicon', download_dir=nltk_data_path)
+nltk.download('sentiwordnet', download_dir=nltk_data_path)
+nltk.download('wordnet', download_dir=nltk_data_path)
+nltk.download('omw-1.4', download_dir=nltk_data_path)
+
 from nltk.corpus import movie_reviews, stopwords
 from nltk.tokenize import word_tokenize
 
@@ -45,40 +56,50 @@ def handle_negations(text):
                      'aren\'t', 'ain\'t', 'wasn\'t', 'weren\'t', 'haven\'t', 
                      'hasn\'t', 'hadn\'t', 'won\'t', 'nor', 'neither']
     
-    # Tokenize the text
-    words = word_tokenize(text.lower())
-    
-    # Process negations
-    in_negation = False
-    result = []
-    
-    for word in words:
-        if word in negation_words:
-            in_negation = True
-            result.append(word)
-        elif word in ['.', '!', '?', ',', ';', ':', ')', ']']:
-            # End negation scope at punctuation
-            in_negation = False
-            result.append(word)
-        elif in_negation and word not in ['and', 'or', 'the', 'a', 'an', 'to', 'of', 'in']:
-            # Mark negated content words
-            result.append(word + '_NEG')
-        else:
-            result.append(word)
-    
-    return ' '.join(result)
+    try:
+        # Tokenize the text
+        words = word_tokenize(text.lower())
+        
+        # Process negations
+        in_negation = False
+        result = []
+        
+        for word in words:
+            if word in negation_words:
+                in_negation = True
+                result.append(word)
+            elif word in ['.', '!', '?', ',', ';', ':', ')', ']']:
+                # End negation scope at punctuation
+                in_negation = False
+                result.append(word)
+            elif in_negation and word not in ['and', 'or', 'the', 'a', 'an', 'to', 'of', 'in']:
+                # Mark negated content words
+                result.append(word + '_NEG')
+            else:
+                result.append(word)
+        
+        return ' '.join(result)
+    except Exception as e:
+        logger.error(f"Error in handle_negations: {e}")
+        # Fallback to simple preprocessing
+        return text.lower()
 
 def clean_text(text):
     """Enhanced text cleaning with negation handling"""
-    # Convert to lowercase
-    text = text.lower()
-    # Remove special characters but keep apostrophes for negations
-    text = re.sub(r'[^\w\s\']', ' ', text)
-    # Apply negation handling
-    text = handle_negations(text)
-    # Remove extra whitespace
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
+    try:
+        # Convert to lowercase
+        text = text.lower()
+        # Remove special characters but keep apostrophes for negations
+        text = re.sub(r'[^\w\s\']', ' ', text)
+        # Apply negation handling
+        text = handle_negations(text)
+        # Remove extra whitespace
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text
+    except Exception as e:
+        logger.error(f"Error in clean_text: {e}")
+        # Simple fallback cleaning
+        return text.lower().strip()
 
 # ==== END PREPROCESSING CODE ====
 
@@ -88,12 +109,15 @@ print("Preparing data from NLTK movie reviews...")
 documents = []
 for category in movie_reviews.categories():
     for fileid in movie_reviews.fileids(category):
-        text = ' '.join(movie_reviews.words(fileid))
-        cleaned_text = clean_text(text)
-        documents.append({
-            'text': cleaned_text,
-            'sentiment': 1 if category == 'pos' else 0
-        })
+        try:
+            text = ' '.join(movie_reviews.words(fileid))
+            cleaned_text = clean_text(text)
+            documents.append({
+                'text': cleaned_text,
+                'sentiment': 1 if category == 'pos' else 0
+            })
+        except Exception as e:
+            logger.error(f"Error processing file {fileid}: {e}")
 
 # Convert to DataFrame
 df = pd.DataFrame(documents)
@@ -103,7 +127,7 @@ print(f"Dataset loaded: {len(df)} reviews")
 print(f"Positive reviews: {sum(df['sentiment'])}")
 print(f"Negative reviews: {len(df) - sum(df['sentiment'])}")
 
-# Specialized datasets as before
+# Specialized datasets
 print("Adding specialized negation examples...")
 negation_examples = [
     {"text": "i don't think it was boring", "sentiment": 1},
@@ -185,7 +209,7 @@ for examples in [negation_examples, emotional_examples, film_examples, obvious_e
 # Combine all specialized examples
 specialized_examples = pd.DataFrame(negation_examples + emotional_examples + film_examples)
 
-# Add specialized examples multiple times
+# Add specialized examples multiple times to increase their influence
 for _ in range(10):
     df = pd.concat([df, specialized_examples], ignore_index=True)
 
@@ -233,8 +257,6 @@ print("Verifying lexicon features are non-negative for MultinomialNB...")
 for features_dict in X_train_lexicon:
     for key, value in list(features_dict.items()):
         if isinstance(value, (int, float)) and value < 0:
-            # This shouldn't happen with our updated lexicon features,
-            # but let's make absolutely sure
             features_dict[key] = 0.0
 
 for features_dict in X_test_lexicon:
@@ -259,27 +281,27 @@ if X_test_lexicon_vec.data.min() < 0:
 print("Creating feature extractors...")
 stop_words = 'english'
 
-# CountVectorizer with improved parameters
+# CountVectorizer with parameters matching production environment
 count_vectorizer = CountVectorizer(
-    max_features=15000,  # Increased from 10000 to capture more negated terms
-    min_df=2,  # Reduced from 3 to include more rare negated features
+    max_features=15000,  # Match the exact feature count with production
+    min_df=2,
     max_df=0.9,
-    ngram_range=(1, 3),  # Increased from (1,2) to capture negation phrases
+    ngram_range=(1, 3),
     stop_words=stop_words,
     strip_accents='unicode'
 )
 
-# TfidfVectorizer with improved parameters
+# TfidfVectorizer with parameters matching production environment
 tfidf_vectorizer = TfidfVectorizer(
-    max_features=15000,  # Increased to match count_vectorizer
-    min_df=2,  # Reduced to match count_vectorizer
+    max_features=15000,  # Match the exact feature count with production
+    min_df=2,
     max_df=0.9,
-    ngram_range=(1, 3),  # Include unigrams, bigrams, and trigrams
+    ngram_range=(1, 3),
     stop_words=stop_words,
     norm='l2',
     use_idf=True,
     smooth_idf=True,
-    sublinear_tf=True  # Apply sublinear tf scaling (1 + log(tf))
+    sublinear_tf=True
 )
 
 # Transform text data
@@ -291,6 +313,20 @@ X_test_tfidf = tfidf_vectorizer.transform(X_test)
 
 print(f"CountVectorizer vocabulary size: {len(count_vectorizer.vocabulary_)}")
 print(f"TfidfVectorizer vocabulary size: {len(tfidf_vectorizer.vocabulary_)}")
+print(f"DictVectorizer feature count: {X_train_lexicon_vec.shape[1]}")
+
+# Save feature information for diagnostic purposes
+feature_info = {
+    'count_vectorizer_feature_count': X_train_counts.shape[1],
+    'tfidf_vectorizer_feature_count': X_train_tfidf.shape[1],
+    'dict_vectorizer_feature_count': X_train_lexicon_vec.shape[1],
+    'combined_naive_bayes_feature_count': X_train_counts.shape[1] + X_train_lexicon_vec.shape[1],
+    'combined_logistic_regression_feature_count': X_train_tfidf.shape[1] + X_train_lexicon_vec.shape[1],
+}
+
+with open('models/feature_info.txt', 'w') as f:
+    for key, value in feature_info.items():
+        f.write(f"{key}: {value}\n")
 
 # Combine features for Naive Bayes
 X_train_combined_nb = hstack([X_train_counts, X_train_lexicon_vec])
@@ -392,8 +428,29 @@ for i, example in enumerate(challenge_examples):
     sentiment = "Positive" if prediction == 1 else "Negative"
     print(f'"{example}" => {sentiment} ({confidence*100:.2f}% confidence)')
 
-# Save models and vectorizers as tuples
+# Save vectorizers separately for easier troubleshooting
+with open('models/count_vectorizer.pkl', 'wb') as f:
+    pickle.dump(count_vectorizer, f)
+
+with open('models/tfidf_vectorizer.pkl', 'wb') as f:
+    pickle.dump(tfidf_vectorizer, f)
+
+with open('models/dict_vectorizer.pkl', 'wb') as f:
+    pickle.dump(dict_vectorizer, f)
+
+# Save models and vectorizers as tuples with additional metadata
 print("\nSaving models to disk...")
+
+# Save feature dimensions for reference
+feature_dimensions = {
+    'text_features': X_train_counts.shape[1],
+    'lexicon_features': X_train_lexicon_vec.shape[1],
+    'total_features': X_train_combined_nb.shape[1]
+}
+
+with open('models/feature_dimensions.pkl', 'wb') as f:
+    pickle.dump(feature_dimensions, f)
+
 with open('models/naive_bayes.pkl', 'wb') as f:
     pickle.dump((nb_model, count_vectorizer, dict_vectorizer), f)
     
