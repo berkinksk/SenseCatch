@@ -9,6 +9,7 @@ import traceback
 import logging
 import re
 import nltk
+from scipy.sparse import hstack, csr_matrix
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -42,11 +43,24 @@ class SentimentEnsemble:
         self.models = {}
         self.vectorizers = {}
         self.dict_vectorizers = {}
+        self.feature_dimensions = self._load_feature_dimensions()
         self.model_weights = {
             'naive_bayes': 0.6,
             'logistic_regression': 0.4,
         }
         self._load_models()
+    
+    def _load_feature_dimensions(self):
+        """Load feature dimensions from saved file if available"""
+        try:
+            if os.path.exists('models/feature_dimensions.pkl'):
+                with open('models/feature_dimensions.pkl', 'rb') as f:
+                    return pickle.load(f)
+            else:
+                return {'text_features': 15000, 'lexicon_features': 9, 'total_features': 15009}
+        except Exception as e:
+            logger.error(f"Error loading feature dimensions: {e}")
+            return {'text_features': 15000, 'lexicon_features': 9, 'total_features': 15009}
     
     def _load_models(self):
         """Load all available models from the models directory"""
@@ -54,6 +68,27 @@ class SentimentEnsemble:
             'naive_bayes': 'models/naive_bayes.pkl',
             'logistic_regression': 'models/logistic_regression.pkl'
         }
+        
+        # Try to load individual vectorizers first if they exist
+        try:
+            if os.path.exists('models/count_vectorizer.pkl'):
+                with open('models/count_vectorizer.pkl', 'rb') as f:
+                    self.vectorizers['naive_bayes'] = pickle.load(f)
+                    logger.info("Loaded count_vectorizer separately")
+            
+            if os.path.exists('models/tfidf_vectorizer.pkl'):
+                with open('models/tfidf_vectorizer.pkl', 'rb') as f:
+                    self.vectorizers['logistic_regression'] = pickle.load(f)
+                    logger.info("Loaded tfidf_vectorizer separately")
+            
+            if os.path.exists('models/dict_vectorizer.pkl'):
+                with open('models/dict_vectorizer.pkl', 'rb') as f:
+                    dict_vec = pickle.load(f)
+                    self.dict_vectorizers['naive_bayes'] = dict_vec
+                    self.dict_vectorizers['logistic_regression'] = dict_vec
+                    logger.info("Loaded dict_vectorizer separately")
+        except Exception as e:
+            logger.error(f"Error loading individual vectorizers: {e}")
         
         for model_name, path in model_paths.items():
             try:
@@ -66,23 +101,35 @@ class SentimentEnsemble:
                             if isinstance(loaded_data, tuple):
                                 if len(loaded_data) == 3:
                                     model, vectorizer, dict_vec = loaded_data
-                                    self.dict_vectorizers[model_name] = dict_vec
+                                    self.models[model_name] = model
+                                    
+                                    # Only use the vectorizer if we don't already have one
+                                    if model_name not in self.vectorizers:
+                                        self.vectorizers[model_name] = vectorizer
+                                    
+                                    # Only use the dict_vectorizer if we don't already have one
+                                    if model_name not in self.dict_vectorizers:
+                                        self.dict_vectorizers[model_name] = dict_vec
+                                    
                                 elif len(loaded_data) == 2:
                                     model, vectorizer = loaded_data
+                                    self.models[model_name] = model
+                                    
+                                    # Only use the vectorizer if we don't already have one
+                                    if model_name not in self.vectorizers:
+                                        self.vectorizers[model_name] = vectorizer
                                 else:
                                     raise ValueError(f"Unexpected tuple length: {len(loaded_data)}")
                             else:
                                 # Maybe it's just the model
                                 model = loaded_data
-                                vectorizer = None
+                                self.models[model_name] = model
                                 logger.warning(f"Loaded only model for {model_name}, no vectorizer found")
                         except Exception as e:
                             logger.error(f"Error unpacking model: {str(e)}")
                             logger.error(traceback.format_exc())
                             continue
                         
-                        self.models[model_name] = model
-                        self.vectorizers[model_name] = vectorizer
                         logger.info(f"Loaded model: {model_name}")
                 else:
                     logger.warning(f"Model file not found: {path}")
@@ -200,6 +247,26 @@ class SentimentEnsemble:
             logger.error(f"Error in safety_check: {str(e)}")
             return False
     
+    def _pad_features(self, X, target_size):
+        """Pad the feature matrix to the target size"""
+        if X.shape[1] == target_size:
+            return X
+        
+        if X.shape[1] > target_size:
+            # We have too many features, truncate
+            logger.warning(f"Truncating features from {X.shape[1]} to {target_size}")
+            return X[:, :target_size]
+        else:
+            # We need to pad with zeros
+            padding_size = target_size - X.shape[1]
+            logger.info(f"Padding features with {padding_size} zeros")
+            
+            # Create a zero matrix for padding
+            zero_padding = csr_matrix((X.shape[0], padding_size))
+            
+            # Horizontally stack X with the zero padding
+            return hstack([X, zero_padding])
+    
     def predict(self, text):
         """Make ensemble prediction on a single text input"""
         try:
@@ -241,7 +308,7 @@ class SentimentEnsemble:
             for model_name, model in self.models.items():
                 try:
                     # Get the corresponding vectorizer
-                    vectorizer = self.vectorizers[model_name]
+                    vectorizer = self.vectorizers.get(model_name)
                     if vectorizer is None:
                         logger.error(f"No vectorizer available for {model_name}")
                         continue
@@ -257,17 +324,22 @@ class SentimentEnsemble:
                             X_lexicon = dict_vec.transform([lexicon_features])
                             
                             # Combine with text features
-                            from scipy.sparse import hstack
                             X = hstack([X, X_lexicon])
                             logger.info(f"Combined text and lexicon features for {model_name}")
                         except Exception as e:
                             logger.error(f"Error combining features for {model_name}: {e}")
                     
                     # Check for feature count mismatch
-                    expected_features = model.n_features_in_ if hasattr(model, 'n_features_in_') else 0
+                    expected_features = 0
+                    if hasattr(model, 'n_features_in_'):
+                        expected_features = model.n_features_in_
+                    elif hasattr(model, 'feature_log_prob_') and len(model.feature_log_prob_) > 0:
+                        expected_features = model.feature_log_prob_.shape[1]
+                    
                     if expected_features > 0 and X.shape[1] != expected_features:
-                        logger.error(f"Feature mismatch for {model_name}: expected {expected_features}, got {X.shape[1]}")
-                        continue
+                        logger.warning(f"Feature mismatch for {model_name}: expected {expected_features}, got {X.shape[1]}")
+                        # Adjust feature count
+                        X = self._pad_features(X, expected_features)
                     
                     # Get prediction and probability
                     pred = model.predict(X)[0]
@@ -412,8 +484,9 @@ class SentimentEnsemble:
             result = []
             for word, score in top_words:
                 sentiment = "positive" if score > 0 else "negative"
-                # Scale the importance to a percentage
-                importance_score = min(abs(score) * 10, 100)  # Scaling factor
+                # Scale the importance to a percentage between 60% and 95%
+                # to avoid extreme values but still show relative importance
+                importance_score = 60 + min(abs(score) * 10, 35)  # Scaling factor
                 result.append({
                     "word": word.replace('_NEG', ''),  # Remove _NEG suffix for display
                     "importance": float(importance_score),
