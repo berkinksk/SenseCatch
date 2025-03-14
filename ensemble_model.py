@@ -396,18 +396,29 @@ class SentimentEnsemble:
             prediction = model.predict(X)[0]
             probabilities = model.predict_proba(X)[0]
             
-            # Calculate confidence based on the model type
+            # Calculate confidence based on the model type with more differentiation
             if model_name == 'naive_bayes':
-                # For Naive Bayes, be slightly less confident
-                confidence = probabilities[prediction] * 0.9
+                # Naive Bayes tends to be more confident, so temper confidence slightly
+                raw_confidence = probabilities[prediction]
+                confidence = raw_confidence * 0.85 if raw_confidence > 0.8 else raw_confidence * 0.95
             elif model_name == 'logistic_regression':
-                # For Logistic Regression, be slightly more confident for positive predictions
-                if prediction == 1:
-                    confidence = min(probabilities[prediction] * 1.05, 0.99)
+                # Logistic Regression is usually more calibrated
+                raw_confidence = probabilities[prediction]
+                if prediction == 1:  # Positive prediction
+                    confidence = min(raw_confidence * 1.05, 0.99)
                 else:
-                    confidence = probabilities[prediction]
+                    confidence = raw_confidence
             else:
                 confidence = probabilities[prediction]
+            
+            # Ensure models have different confidence patterns
+            if model_name == 'naive_bayes':
+                # Add small variation to make NB more confident for strong signals,
+                # less confident for weak signals
+                if confidence > 0.85:
+                    confidence = min(confidence * 1.1, 0.99)
+                elif confidence < 0.65:
+                    confidence = confidence * 0.9
             
             # Get influential words
             influential_words = self._extract_influential_words(text, prediction, model_name)
