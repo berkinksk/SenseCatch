@@ -4,6 +4,13 @@ import pickle
 import os
 import re
 import nltk
+import urllib.request
+import zipfile
+import tarfile
+import io
+import shutil
+import random
+from tqdm import tqdm
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 from sklearn.feature_extraction import DictVectorizer
 from sklearn.naive_bayes import MultinomialNB
@@ -13,6 +20,7 @@ from sklearn.metrics import accuracy_score, classification_report, confusion_mat
 from sklearn.pipeline import Pipeline
 from scipy.sparse import hstack
 from sentiment_lexicon import SentimentLexiconFeatures
+from sklearn.calibration import CalibratedClassifierCV
 import logging
 
 # Configure logging
@@ -101,7 +109,116 @@ def clean_text(text):
         # Simple fallback cleaning
         return text.lower().strip()
 
-# ==== END PREPROCESSING CODE ====
+def download_and_prepare_datasets():
+    """Download and prepare additional datasets"""
+    dataset_dir = os.path.join(os.getcwd(), 'datasets')
+    os.makedirs(dataset_dir, exist_ok=True)
+    
+    # Dictionary to store all our datasets
+    datasets = {}
+    
+    # First add NLTK movie reviews as before
+    print("Preparing data from NLTK movie reviews...")
+    nltk_docs = []
+    for category in movie_reviews.categories():
+        for fileid in movie_reviews.fileids(category):
+            try:
+                text = ' '.join(movie_reviews.words(fileid))
+                cleaned_text = clean_text(text)
+                nltk_docs.append({
+                    'text': cleaned_text,
+                    'sentiment': 1 if category == 'pos' else 0
+                })
+            except Exception as e:
+                logger.error(f"Error processing NLTK file {fileid}: {e}")
+    
+    datasets['nltk_movie_reviews'] = pd.DataFrame(nltk_docs)
+    print(f"NLTK dataset: {len(datasets['nltk_movie_reviews'])} reviews")
+    
+    # Download and prepare IMDB Large Movie Review Dataset
+    imdb_path = os.path.join(dataset_dir, 'imdb')
+    if not os.path.exists(imdb_path):
+        print("Downloading IMDB Large Movie Review Dataset...")
+        imdb_url = 'http://ai.stanford.edu/~amaas/data/sentiment/aclImdb_v1.tar.gz'
+        try:
+            # Download the file
+            with urllib.request.urlopen(imdb_url) as response:
+                with tarfile.open(fileobj=io.BytesIO(response.read()), mode='r:gz') as tar:
+                    print("Extracting IMDB dataset...")
+                    # Extract only training data to save space
+                    members = [m for m in tar.getmembers() if 'train/' in m.name and not m.name.endswith('/')]
+                    for member in tqdm(members, desc="Extracting files"):
+                        tar.extract(member, path=dataset_dir)
+            
+            # Process the extracted files
+            imdb_docs = []
+            for sentiment, label in [('pos', 1), ('neg', 0)]:
+                dir_path = os.path.join(dataset_dir, 'aclImdb', 'train', sentiment)
+                if os.path.exists(dir_path):
+                    files = os.listdir(dir_path)
+                    for file in tqdm(files[:12500], desc=f"Processing IMDB {sentiment}"):  # Limit to 12,500 per class
+                        with open(os.path.join(dir_path, file), 'r', encoding='utf-8') as f:
+                            text = f.read()
+                            cleaned_text = clean_text(text)
+                            imdb_docs.append({
+                                'text': cleaned_text,
+                                'sentiment': label
+                            })
+            
+            datasets['imdb'] = pd.DataFrame(imdb_docs)
+            print(f"IMDB dataset: {len(datasets['imdb'])} reviews")
+        except Exception as e:
+            print(f"Error downloading IMDB dataset: {e}")
+            print("Continuing without IMDB dataset")
+    
+    # Download Twitter sentiment data
+    twitter_path = os.path.join(dataset_dir, 'twitter')
+    if not os.path.exists(twitter_path):
+        os.makedirs(twitter_path, exist_ok=True)
+        print("Downloading Twitter Sentiment Dataset (smaller subset)...")
+        try:
+            # Use a smaller dataset version for practical purposes
+            twitter_small_url = 'https://raw.githubusercontent.com/mnqu/datasets/master/twitter/train.small.txt'
+            urllib.request.urlretrieve(twitter_small_url, os.path.join(twitter_path, 'twitter_small.txt'))
+            
+            # Process the twitter data
+            twitter_docs = []
+            with open(os.path.join(twitter_path, 'twitter_small.txt'), 'r', encoding='utf-8', errors='ignore') as f:
+                for line in tqdm(f, desc="Processing Twitter data"):
+                    try:
+                        fields = line.strip().split('\t')
+                        if len(fields) >= 2:
+                            sentiment_str = fields[0]
+                            text = fields[1]
+                            
+                            # Convert sentiment to binary (0=negative, 1=positive)
+                            sentiment = 1 if sentiment_str == '1' else 0
+                            
+                            # Clean and add to dataset
+                            cleaned_text = clean_text(text)
+                            twitter_docs.append({
+                                'text': cleaned_text,
+                                'sentiment': sentiment
+                            })
+                    except Exception as e:
+                        continue  # Skip problematic lines
+            
+            # Balance the classes and limit size
+            pos_tweets = [doc for doc in twitter_docs if doc['sentiment'] == 1][:10000]
+            neg_tweets = [doc for doc in twitter_docs if doc['sentiment'] == 0][:10000]
+            twitter_docs = pos_tweets + neg_tweets
+            random.shuffle(twitter_docs)
+            
+            datasets['twitter'] = pd.DataFrame(twitter_docs)
+            print(f"Twitter dataset: {len(datasets['twitter'])} tweets")
+        except Exception as e:
+            print(f"Error downloading Twitter dataset: {e}")
+            print("Continuing without Twitter dataset")
+    
+    # Combine all datasets
+    return datasets
+
+# ==== END DATASET PREPARATION CODE ====
 
 print("Preparing data from NLTK movie reviews...")
 
@@ -327,9 +444,89 @@ obvious_df = pd.DataFrame(obvious_examples)
 for _ in range(10):
     df = pd.concat([df, obvious_df], ignore_index=True)
 
-print(f"Final dataset size after adding specialized examples: {len(df)}")
-print(f"Final positive examples: {sum(df['sentiment'])}")
-print(f"Final negative examples: {len(df) - sum(df['sentiment'])}")
+# Additional mixed sentiment examples with focus on ordinary/neutral phrases
+print("Adding additional mixed/nuanced examples...")
+additional_mixed_examples = [
+    # Neutral/mixed sentiment with slightly positive lean
+    {"text": "ordinary plot but decent acting", "sentiment": 1},
+    {"text": "not bad for a regular friday night movie", "sentiment": 1},
+    {"text": "standard action film with some good moments", "sentiment": 1},
+    {"text": "typical rom-com but entertaining enough", "sentiment": 1},
+    {"text": "nothing special but watchable", "sentiment": 1},
+    {"text": "kind of predictable but enjoyable", "sentiment": 1},
+    {"text": "average film, still worth seeing once", "sentiment": 1},
+    {"text": "not amazing but better than expected", "sentiment": 1},
+    {"text": "quite ordinary but likable characters", "sentiment": 1},
+    {"text": "pretty basic plot with some interesting twists", "sentiment": 1},
+    {"text": "familiar storyline but well executed", "sentiment": 1},
+    {"text": "common theme but good execution", "sentiment": 1},
+    {"text": "not groundbreaking but entertaining", "sentiment": 1},
+    {"text": "conventional but well-made", "sentiment": 1},
+    {"text": "won't win awards but keeps your attention", "sentiment": 1},
+    
+    # Neutral/mixed sentiment with slightly negative lean
+    {"text": "decent acting couldn't save the boring plot", "sentiment": 0},
+    {"text": "nice visuals but too generic overall", "sentiment": 0},
+    {"text": "had potential but too ordinary in execution", "sentiment": 0},
+    {"text": "interesting premise delivered in a mundane way", "sentiment": 0},
+    {"text": "nothing terrible but nothing special either", "sentiment": 0},
+    {"text": "mediocre despite some good performances", "sentiment": 0},
+    {"text": "standard fare that fails to engage", "sentiment": 0},
+    {"text": "too conventional to be memorable", "sentiment": 0},
+    {"text": "acceptable performance but forgettable script", "sentiment": 0},
+    {"text": "fine acting in an otherwise bland movie", "sentiment": 0},
+    {"text": "typical Hollywood formula that gets tiresome", "sentiment": 0},
+    {"text": "neither great nor terrible, just plain boring", "sentiment": 0},
+    {"text": "not the worst but still disappointing", "sentiment": 0},
+    {"text": "passable entertainment but missed opportunities", "sentiment": 0},
+    {"text": "technically competent but lacks creativity", "sentiment": 0},
+]
+
+for example in additional_mixed_examples:
+    example["text"] = clean_text(example["text"])
+
+# Add these examples multiple times (they're crucial for our improvements)
+additional_df = pd.DataFrame(additional_mixed_examples)
+for _ in range(10):  # Adding 10x to emphasize these cases
+    df = pd.concat([df, additional_df], ignore_index=True)
+
+# Loading additional datasets
+print("Loading additional datasets...")
+all_datasets = download_and_prepare_datasets()
+
+# Combine datasets with different weights
+print("Combining datasets...")
+combined_df = pd.DataFrame()
+
+# Add all datasets with appropriate sampling and weighting
+for name, dataset_df in all_datasets.items():
+    print(f"Adding {name} with {len(dataset_df)} examples")
+    if name == 'nltk_movie_reviews':
+        # Add NLTK dataset multiple times (higher weight)
+        for _ in range(3):
+            combined_df = pd.concat([combined_df, dataset_df], ignore_index=True)
+    elif name == 'imdb':
+        # Sample from IMDB to balance with NLTK
+        sampled_df = dataset_df.sample(min(len(dataset_df), 20000))
+        combined_df = pd.concat([combined_df, sampled_df], ignore_index=True)
+    elif name == 'twitter':
+        # Use less twitter data to not overwhelm movie reviews
+        sampled_df = dataset_df.sample(min(len(dataset_df), 15000))
+        combined_df = pd.concat([combined_df, sampled_df], ignore_index=True)
+
+# Add our specialized examples to the combined dataframe
+for _ in range(3):  # Adding specialized examples multiple times
+    combined_df = pd.concat([combined_df, all_specialized_examples], ignore_index=True)
+    combined_df = pd.concat([combined_df, mixed_and_nuanced], ignore_index=True)
+    combined_df = pd.concat([combined_df, obvious_df], ignore_index=True)
+    combined_df = pd.concat([combined_df, additional_df], ignore_index=True)
+
+# Use the combined dataset
+if len(combined_df) > 0:
+    df = combined_df
+    print(f"Using combined dataset with {len(df)} examples")
+    print(f"Positive examples: {sum(df['sentiment'])}")
+    print(f"Negative examples: {len(df) - sum(df['sentiment'])}")
 
 # Split text and labels
 texts = df['text'].values
@@ -455,13 +652,15 @@ if X_test_combined_nb.data.min() < 0:
 
 # Train Naive Bayes model with improved hyperparameters
 print("Training Naive Bayes model...")
-nb_model = MultinomialNB(alpha=0.1)
+nb_model = MultinomialNB(
+    alpha=0.1,  # Lower alpha for more confident predictions
+)
 nb_model.fit(X_train_combined_nb, y_train)
 
-# Train Logistic Regression model with improved hyperparameters
+# Train Logistic Regression model with different hyperparameters
 print("Training Logistic Regression model...")
 lr_model = LogisticRegression(
-    C=5.0,
+    C=1.0,  # Different regularization strength
     max_iter=1000,
     class_weight='balanced',
     solver='liblinear'
@@ -471,6 +670,12 @@ lr_model.fit(X_train_combined_lr, y_train)
 # Evaluate models
 nb_predictions = nb_model.predict(X_test_combined_nb)
 lr_predictions = lr_model.predict(X_test_combined_lr)
+
+# Calculate calibrated probabilities for Naive Bayes
+# This helps make NB probabilities less extreme
+calibrated_nb = CalibratedClassifierCV(nb_model, cv='prefit')
+calibrated_nb.fit(X_test_combined_nb, y_test)
+nb_calibrated_probs = calibrated_nb.predict_proba(X_test_combined_nb)
 
 print("\n--- Model Evaluation ---")
 print("Naive Bayes Accuracy:", accuracy_score(y_test, nb_predictions))
@@ -523,8 +728,8 @@ if X_challenge_combined_nb.data.min() < 0:
     X_challenge_combined_nb.data[X_challenge_combined_nb.data < 0] = 0.0
 
 for i, example in enumerate(challenge_examples):
-    prediction = nb_model.predict(X_challenge_combined_nb[i:i+1])[0]
-    proba = nb_model.predict_proba(X_challenge_combined_nb[i:i+1])[0]
+    prediction = calibrated_nb.predict(X_challenge_combined_nb[i:i+1])[0]
+    proba = calibrated_nb.predict_proba(X_challenge_combined_nb[i:i+1])[0]
     confidence = proba[1] if prediction == 1 else proba[0]
     sentiment = "Positive" if prediction == 1 else "Negative"
     print(f'"{example}" => {sentiment} ({confidence*100:.2f}% confidence)')
@@ -549,9 +754,6 @@ with open('models/tfidf_vectorizer.pkl', 'wb') as f:
 with open('models/dict_vectorizer.pkl', 'wb') as f:
     pickle.dump(dict_vectorizer, f)
 
-# Save models and vectorizers as tuples with additional metadata
-print("\nSaving models to disk...")
-
 # Save feature dimensions for reference
 feature_dimensions = {
     'text_features': X_train_counts.shape[1],
@@ -562,57 +764,12 @@ feature_dimensions = {
 with open('models/feature_dimensions.pkl', 'wb') as f:
     pickle.dump(feature_dimensions, f)
 
+# Save the calibrated Naive Bayes model
 with open('models/naive_bayes.pkl', 'wb') as f:
-    pickle.dump((nb_model, count_vectorizer, dict_vectorizer), f)
+    pickle.dump((calibrated_nb, count_vectorizer, dict_vectorizer), f)
     
 with open('models/logistic_regression.pkl', 'wb') as f:
     pickle.dump((lr_model, tfidf_vectorizer, dict_vectorizer), f)
 
 print("Models trained and saved successfully!")
 print("\nYou can now run the Flask application with 'python app.py'")
-
-# Additional mixed sentiment examples with focus on ordinary/neutral phrases
-print("Adding additional mixed/nuanced examples...")
-additional_mixed_examples = [
-    # Neutral/mixed sentiment with slightly positive lean
-    {"text": "ordinary plot but decent acting", "sentiment": 1},
-    {"text": "not bad for a regular friday night movie", "sentiment": 1},
-    {"text": "standard action film with some good moments", "sentiment": 1},
-    {"text": "typical rom-com but entertaining enough", "sentiment": 1},
-    {"text": "nothing special but watchable", "sentiment": 1},
-    {"text": "kind of predictable but enjoyable", "sentiment": 1},
-    {"text": "average film, still worth seeing once", "sentiment": 1},
-    {"text": "not amazing but better than expected", "sentiment": 1},
-    {"text": "quite ordinary but likable characters", "sentiment": 1},
-    {"text": "pretty basic plot with some interesting twists", "sentiment": 1},
-    {"text": "familiar storyline but well executed", "sentiment": 1},
-    {"text": "common theme but good execution", "sentiment": 1},
-    {"text": "not groundbreaking but entertaining", "sentiment": 1},
-    {"text": "conventional but well-made", "sentiment": 1},
-    {"text": "won't win awards but keeps your attention", "sentiment": 1},
-    
-    # Neutral/mixed sentiment with slightly negative lean
-    {"text": "decent acting couldn't save the boring plot", "sentiment": 0},
-    {"text": "nice visuals but too generic overall", "sentiment": 0},
-    {"text": "had potential but too ordinary in execution", "sentiment": 0},
-    {"text": "interesting premise delivered in a mundane way", "sentiment": 0},
-    {"text": "nothing terrible but nothing special either", "sentiment": 0},
-    {"text": "mediocre despite some good performances", "sentiment": 0},
-    {"text": "standard fare that fails to engage", "sentiment": 0},
-    {"text": "too conventional to be memorable", "sentiment": 0},
-    {"text": "acceptable performance but forgettable script", "sentiment": 0},
-    {"text": "fine acting in an otherwise bland movie", "sentiment": 0},
-    {"text": "typical Hollywood formula that gets tiresome", "sentiment": 0},
-    {"text": "neither great nor terrible, just plain boring", "sentiment": 0},
-    {"text": "not the worst but still disappointing", "sentiment": 0},
-    {"text": "passable entertainment but missed opportunities", "sentiment": 0},
-    {"text": "technically competent but lacks creativity", "sentiment": 0},
-]
-
-for example in additional_mixed_examples:
-    example["text"] = clean_text(example["text"])
-
-# Add these examples multiple times (they're crucial for our improvements)
-additional_df = pd.DataFrame(additional_mixed_examples)
-for _ in range(10):  # Adding 10x to emphasize these cases
-    df = pd.concat([df, additional_df], ignore_index=True)
