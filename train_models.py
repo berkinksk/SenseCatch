@@ -570,3 +570,49 @@ with open('models/logistic_regression.pkl', 'wb') as f:
 
 print("Models trained and saved successfully!")
 print("\nYou can now run the Flask application with 'python app.py'")
+
+# Additional mixed sentiment examples with focus on ordinary/neutral phrases
+print("Adding additional mixed/nuanced examples...")
+additional_mixed_examples = [
+    # Neutral/mixed sentiment with slightly positive lean
+    {"text": "ordinary plot but decent acting", "sentiment": 1},
+    {"text": "not bad for a regular friday night movie", "sentiment": 1},
+    {"text": "standard action film with some good moments", "sentiment": 1},
+    {"text": "typical rom-com but entertaining enough", "sentiment": 1},
+    {"text": "nothing special but watchable", "sentiment": 1},
+    {"text": "kind of predictable but enjoyable", "sentiment": 1},
+    {"text": "average film, still worth seeing once", "sentiment": 1},
+    {"text": "not amazing but better than expected", "sentiment": 1},
+    {"text": "quite ordinary but likable characters", "sentiment": 1},
+    {"text": "pretty basic plot with some interesting twists", "sentiment": 1},
+    {"text": "familiar storyline but well executed", "sentiment": 1},
+    {"text": "common theme but good execution", "sentiment": 1},
+    {"text": "not groundbreaking but entertaining", "sentiment": 1},
+    {"text": "conventional but well-made", "sentiment": 1},
+    {"text": "won't win awards but keeps your attention", "sentiment": 1},
+    
+    # Neutral/mixed sentiment with slightly negative lean
+    {"text": "decent acting couldn't save the boring plot", "sentiment": 0},
+    {"text": "nice visuals but too generic overall", "sentiment": 0},
+    {"text": "had potential but too ordinary in execution", "sentiment": 0},
+    {"text": "interesting premise delivered in a mundane way", "sentiment": 0},
+    {"text": "nothing terrible but nothing special either", "sentiment": 0},
+    {"text": "mediocre despite some good performances", "sentiment": 0},
+    {"text": "standard fare that fails to engage", "sentiment": 0},
+    {"text": "too conventional to be memorable", "sentiment": 0},
+    {"text": "acceptable performance but forgettable script", "sentiment": 0},
+    {"text": "fine acting in an otherwise bland movie", "sentiment": 0},
+    {"text": "typical Hollywood formula that gets tiresome", "sentiment": 0},
+    {"text": "neither great nor terrible, just plain boring", "sentiment": 0},
+    {"text": "not the worst but still disappointing", "sentiment": 0},
+    {"text": "passable entertainment but missed opportunities", "sentiment": 0},
+    {"text": "technically competent but lacks creativity", "sentiment": 0},
+]
+
+for example in additional_mixed_examples:
+    example["text"] = clean_text(example["text"])
+
+# Add these examples multiple times (they're crucial for our improvements)
+additional_df = pd.DataFrame(additional_mixed_examples)
+for _ in range(10):  # Adding 10x to emphasize these cases
+    df = pd.concat([df, additional_df], ignore_index=True)

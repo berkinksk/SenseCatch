@@ -207,6 +207,40 @@ class SentimentEnsemble:
             # Return original text if there's an error
             return text
     
+    def process_contrast_markers(self, text):
+        """Process text with contrast markers like 'but', 'however'"""
+        try:
+            # List of contrast markers
+            contrast_markers = ["but", "however", "although", "though", "despite", "yet", "nevertheless", "still"]
+            
+            # Check if any contrast markers are present
+            for marker in contrast_markers:
+                if f" {marker} " in f" {text} ":
+                    parts = text.split(f" {marker} ", 1)
+                    if len(parts) == 2:
+                        # Return the parts with weights
+                        return {
+                            "has_contrast": True,
+                            "before": parts[0].strip(),
+                            "after": parts[1].strip(),
+                            "before_weight": 0.3,  # Give less weight to what comes before the contrast marker
+                            "after_weight": 0.7    # Give more weight to what comes after the contrast marker
+                        }
+            
+            # No contrast markers found
+            return {
+                "has_contrast": False,
+                "full_text": text,
+                "weight": 1.0
+            }
+        except Exception as e:
+            logger.error(f"Error in process_contrast_markers: {e}")
+            return {
+                "has_contrast": False,
+                "full_text": text,
+                "weight": 1.0
+            }
+    
     def clean_text(self, text):
         """Enhanced text cleaning with negation handling"""
         try:
@@ -267,7 +301,134 @@ class SentimentEnsemble:
             # Horizontally stack X with the zero padding
             return hstack([X, zero_padding])
     
-    def predict(self, text):
+    def predict_with_specific_model(self, text, model_name):
+        """Make a prediction using a specific named model with its own confidence calculation"""
+        try:
+            # Check if the requested model exists
+            if model_name not in self.models or model_name not in self.vectorizers:
+                logger.error(f"Model {model_name} not available")
+                return None, 0.0, []
+            
+            # Get the model and vectorizer
+            model = self.models[model_name]
+            vectorizer = self.vectorizers[model_name]
+            
+            # Clean the text
+            cleaned_text = self.clean_text(text)
+            
+            # Process contrast markers
+            contrast_info = self.process_contrast_markers(cleaned_text)
+            
+            # If there's a contrast marker, handle each part separately
+            if contrast_info["has_contrast"]:
+                # Process both parts
+                before_text = contrast_info["before"]
+                after_text = contrast_info["after"]
+                before_weight = contrast_info["before_weight"]
+                after_weight = contrast_info["after_weight"]
+                
+                # Process both parts and get weighted prediction
+                before_prediction = self._predict_simple_text(before_text, model, vectorizer, model_name)
+                after_prediction = self._predict_simple_text(after_text, model, vectorizer, model_name)
+                
+                # Calculate weighted prediction
+                before_score = (before_prediction["prediction"] * 2 - 1) * before_prediction["confidence"] * before_weight
+                after_score = (after_prediction["prediction"] * 2 - 1) * after_prediction["confidence"] * after_weight
+                
+                # Combine scores
+                combined_score = before_score + after_score
+                final_prediction = 1 if combined_score > 0 else 0
+                
+                # Scale confidence based on combined score
+                confidence = min(0.5 + abs(combined_score) / 2, 0.99)
+                
+                # Get influential words (prioritize words after the contrast marker)
+                influential_words = after_prediction["influential_words"]
+                if len(influential_words) < 3 and before_prediction["influential_words"]:
+                    # Add some from the before part if needed
+                    influential_words.extend(before_prediction["influential_words"][:3 - len(influential_words)])
+                
+                return final_prediction, confidence, influential_words
+            else:
+                # No contrast marker, process the whole text
+                result = self._predict_simple_text(cleaned_text, model, vectorizer, model_name)
+                return result["prediction"], result["confidence"], result["influential_words"]
+                
+        except Exception as e:
+            logger.error(f"Error in predict_with_specific_model: {str(e)}")
+            logger.error(traceback.format_exc())
+            return 1, 0.51, []  # Default positive prediction with low confidence
+    
+    def _predict_simple_text(self, text, model, vectorizer, model_name):
+        """Process a simple text segment with no contrast markers"""
+        try:
+            # Get lexicon features
+            lexicon_features = None
+            if hasattr(self, 'lexicon') and self.lexicon:
+                try:
+                    lexicon_features = self.lexicon.extract_all_features(text)
+                except Exception as e:
+                    logger.error(f"Error extracting lexicon features: {e}")
+            
+            # Transform text
+            X = vectorizer.transform([text])
+            
+            # Add lexicon features if available
+            if lexicon_features and model_name in self.dict_vectorizers:
+                try:
+                    dict_vec = self.dict_vectorizers[model_name]
+                    X_lexicon = dict_vec.transform([lexicon_features])
+                    X = hstack([X, X_lexicon])
+                except Exception as e:
+                    logger.error(f"Error combining features: {e}")
+            
+            # Check for feature count mismatch
+            expected_features = 0
+            if hasattr(model, 'n_features_in_'):
+                expected_features = model.n_features_in_
+            elif hasattr(model, 'feature_log_prob_') and len(model.feature_log_prob_) > 0:
+                expected_features = model.feature_log_prob_.shape[1]
+            
+            if expected_features > 0 and X.shape[1] != expected_features:
+                X = self._pad_features(X, expected_features)
+            
+            # Get prediction and probability
+            prediction = model.predict(X)[0]
+            probabilities = model.predict_proba(X)[0]
+            
+            # Calculate confidence based on the model type
+            if model_name == 'naive_bayes':
+                # For Naive Bayes, be slightly less confident
+                confidence = probabilities[prediction] * 0.9
+            elif model_name == 'logistic_regression':
+                # For Logistic Regression, be slightly more confident for positive predictions
+                if prediction == 1:
+                    confidence = min(probabilities[prediction] * 1.05, 0.99)
+                else:
+                    confidence = probabilities[prediction]
+            else:
+                confidence = probabilities[prediction]
+            
+            # Get influential words
+            influential_words = self._extract_influential_words(text, prediction, model_name)
+            
+            return {
+                "prediction": prediction,
+                "confidence": confidence,
+                "probabilities": probabilities,
+                "influential_words": influential_words
+            }
+        except Exception as e:
+            logger.error(f"Error in _predict_simple_text: {str(e)}")
+            logger.error(traceback.format_exc())
+            return {
+                "prediction": 1,  # Default positive
+                "confidence": 0.51,
+                "probabilities": [0.49, 0.51],
+                "influential_words": []
+            }
+    
+    def predict(self, text, specific_model=None):
         """Make ensemble prediction on a single text input"""
         try:
             # First check for simple obvious cases
@@ -278,6 +439,10 @@ class SentimentEnsemble:
                                     for word in text.lower().split() 
                                     if word in ("awesome", "amazing", "excellent", "terrible", "awful", "horrible")][:5]
                 return prediction, confidence, influential_words
+            
+            # If specific model requested, use that
+            if specific_model and specific_model in self.models:
+                return self.predict_with_specific_model(text, specific_model)
             
             # Clean and preprocess the text
             cleaned_text = self.clean_text(text)
@@ -294,91 +459,33 @@ class SentimentEnsemble:
                 # Return a default prediction with low confidence
                 return 1, 0.51, []
             
-            # Extract lexicon features if available
-            lexicon_features = None
-            if hasattr(self, 'lexicon') and self.lexicon:
-                try:
-                    lexicon_features = self.lexicon.extract_all_features(text)
-                    logger.info(f"Lexicon features extracted: {lexicon_features}")
-                except Exception as e:
-                    logger.error(f"Error extracting lexicon features: {e}")
+            # Get predictions from each model individually
+            model_predictions = {}
             
-            # Get predictions from each model
-            predictions = {}
-            for model_name, model in self.models.items():
-                try:
-                    # Get the corresponding vectorizer
-                    vectorizer = self.vectorizers.get(model_name)
-                    if vectorizer is None:
-                        logger.error(f"No vectorizer available for {model_name}")
-                        continue
-                    
-                    # Transform text using the model's vectorizer
-                    X = vectorizer.transform([cleaned_text])
-                    
-                    # If we have lexicon features and dict vectorizer, use them
-                    if lexicon_features and model_name in self.dict_vectorizers:
-                        try:
-                            # Transform lexicon features
-                            dict_vec = self.dict_vectorizers[model_name]
-                            X_lexicon = dict_vec.transform([lexicon_features])
-                            
-                            # Combine with text features
-                            X = hstack([X, X_lexicon])
-                            logger.info(f"Combined text and lexicon features for {model_name}")
-                        except Exception as e:
-                            logger.error(f"Error combining features for {model_name}: {e}")
-                    
-                    # Check for feature count mismatch
-                    expected_features = 0
-                    if hasattr(model, 'n_features_in_'):
-                        expected_features = model.n_features_in_
-                    elif hasattr(model, 'feature_log_prob_') and len(model.feature_log_prob_) > 0:
-                        expected_features = model.feature_log_prob_.shape[1]
-                    
-                    if expected_features > 0 and X.shape[1] != expected_features:
-                        logger.warning(f"Feature mismatch for {model_name}: expected {expected_features}, got {X.shape[1]}")
-                        # Adjust feature count
-                        X = self._pad_features(X, expected_features)
-                    
-                    # Get prediction and probability
-                    pred = model.predict(X)[0]
-                    prob = model.predict_proba(X)[0]
-                    confidence = prob[1] if pred == 1 else prob[0]
-                    
-                    predictions[model_name] = {
+            for model_name in self.models:
+                # Get prediction using the specific model
+                pred, conf, words = self.predict_with_specific_model(text, model_name)
+                if pred is not None:
+                    model_predictions[model_name] = {
                         'prediction': pred,
-                        'confidence': confidence,
-                        'probability': prob
+                        'confidence': conf,
+                        'influential_words': words
                     }
-                    logger.info(f"{model_name} prediction: {pred} with confidence {confidence}")
-                except Exception as e:
-                    logger.error(f"Error getting prediction from {model_name}: {str(e)}")
-                    logger.error(traceback.format_exc())
             
             # If we couldn't get any predictions, use a fallback approach
-            if not predictions:
+            if not model_predictions:
                 logger.error("Failed to get predictions from any model")
-                # Use a simple lexicon-based approach
-                positive_words = ["good", "great", "excellent", "amazing", "awesome", "love", "nice", "enjoy", "like"]
-                negative_words = ["bad", "terrible", "awful", "horrible", "worst", "hate", "dislike", "poor", "waste"]
-                
-                pos_count = sum(1 for word in positive_words if word in cleaned_text)
-                neg_count = sum(1 for word in negative_words if word in cleaned_text)
-                
-                if pos_count > neg_count:
-                    return 1, 0.65, []
-                elif neg_count > pos_count:
-                    return 0, 0.65, []
-                else:
-                    return 1, 0.51, []  # Default positive with low confidence
+                return 1, 0.51, []  # Default positive with low confidence
             
             # Combine predictions using weighted average
             weighted_sum = 0
             weight_sum = 0
             
-            for model_name, pred_info in predictions.items():
-                weighted_sum += (pred_info['prediction'] * 2 - 1) * pred_info['confidence'] * self.model_weights.get(model_name, 1.0)
+            for model_name, pred_info in model_predictions.items():
+                # Convert binary prediction to score: 1 -> +1, 0 -> -1
+                pred_score = pred_info['prediction'] * 2 - 1
+                # Weight by confidence and model weight
+                weighted_sum += pred_score * pred_info['confidence'] * self.model_weights.get(model_name, 1.0)
                 weight_sum += self.model_weights.get(model_name, 1.0)
             
             # Normalize
@@ -388,10 +495,9 @@ class SentimentEnsemble:
             ensemble_prediction = 1 if ensemble_score > 0 else 0
             ensemble_confidence = min(0.5 + abs(ensemble_score) / 2, 0.99)  # Scale to [0.5, 0.99] range
             
-            # Extract influential words for explanation
-            # Use the first available model for word importance
-            model_for_words = next(iter(self.models.keys())) if self.models else "naive_bayes"
-            influential_words = self._extract_influential_words(cleaned_text, ensemble_prediction, model_for_words)
+            # Get influential words from the highest confidence model
+            best_model = max(model_predictions.items(), key=lambda x: x[1]['confidence'])[0]
+            influential_words = model_predictions[best_model]['influential_words']
             
             return ensemble_prediction, ensemble_confidence, influential_words
         except Exception as e:
@@ -485,8 +591,14 @@ class SentimentEnsemble:
             for word, score in top_words:
                 sentiment = "positive" if score > 0 else "negative"
                 # Scale the importance to a percentage between 60% and 95%
-                # to avoid extreme values but still show relative importance
-                importance_score = 60 + min(abs(score) * 10, 35)  # Scaling factor
+                importance_score = 60 + min(abs(score) * 10, 35)  # Scaling factor for model_type
+                
+                # Adjust importance based on model type
+                if model_type == 'naive_bayes':
+                    importance_score = min(importance_score * 0.95, 95)  # Slightly lower confidence for NB
+                elif model_type == 'logistic_regression':
+                    importance_score = min(importance_score * 1.05, 95)  # Slightly higher for LR
+                
                 result.append({
                     "word": word.replace('_NEG', ''),  # Remove _NEG suffix for display
                     "importance": float(importance_score),
