@@ -28,12 +28,17 @@ def simple_tokenize(text):
 # Safely import nltk
 try:
     from nltk.tokenize import word_tokenize
+    from nltk import ne_chunk, pos_tag
     logger.info("NLTK imported successfully")
 except ImportError:
     logger.error("Error importing NLTK. Using fallback tokenizer.")
     # Fallback simple tokenizer if nltk is not available
     def word_tokenize(text):
         return simple_tokenize(text)
+    def pos_tag(tokens):
+        return [(token, 'NN') for token in tokens]  # Default all to nouns
+    def ne_chunk(tagged_tokens):
+        return tagged_tokens
 
 class SentimentEnsemble:
     """Ensemble model that combines multiple sentiment classifiers"""
@@ -48,7 +53,32 @@ class SentimentEnsemble:
             'naive_bayes': 0.6,
             'logistic_regression': 0.4,
         }
+        # Add common movie title list for entity recognition
+        self.movie_titles = self._load_movie_titles()
         self._load_models()
+    
+    def _load_movie_titles(self):
+        """Load a basic list of common movie titles"""
+        # Start with a small default list
+        titles = [
+            "the godfather", "citizen kane", "casablanca", "gone with the wind",
+            "the wizard of oz", "star wars", "pulp fiction", "the shawshank redemption",
+            "the dark knight", "schindler's list", "lord of the rings", "forrest gump",
+            "the matrix", "goodfellas", "titanic", "saving private ryan", "jaws",
+            "apocalypse now", "gladiator", "the silence of the lambs", "king of comedy",
+            "the room", "the avengers", "jurassic park", "the lion king"
+        ]
+        
+        # Try to load from file if exists
+        try:
+            if os.path.exists('models/movie_titles.txt'):
+                with open('models/movie_titles.txt', 'r', encoding='utf-8') as f:
+                    titles = [line.strip().lower() for line in f if line.strip()]
+                logger.info(f"Loaded {len(titles)} movie titles from file")
+        except Exception as e:
+            logger.error(f"Error loading movie titles: {e}")
+        
+        return titles
     
     def _load_feature_dimensions(self):
         """Load feature dimensions from saved file if available"""
@@ -57,10 +87,10 @@ class SentimentEnsemble:
                 with open('models/feature_dimensions.pkl', 'rb') as f:
                     return pickle.load(f)
             else:
-                return {'text_features': 15000, 'lexicon_features': 9, 'total_features': 15009}
+                return {'text_features': 10000, 'lexicon_features': 9, 'total_features': 10009}
         except Exception as e:
             logger.error(f"Error loading feature dimensions: {e}")
-            return {'text_features': 15000, 'lexicon_features': 9, 'total_features': 15009}
+            return {'text_features': 10000, 'lexicon_features': 9, 'total_features': 10009}
     
     def _load_models(self):
         """Load all available models from the models directory"""
@@ -146,6 +176,39 @@ class SentimentEnsemble:
             logger.error(f"Error initializing sentiment lexicon: {e}")
             self.lexicon = None
     
+    def identify_movie_titles(self, text):
+        """Identify potential movie titles in text"""
+        try:
+            # Check against our movie titles list
+            marked_text = text
+            for title in self.movie_titles:
+                if len(title.split()) > 1:  # Only multi-word titles to avoid false positives
+                    title_pattern = re.compile(r'\b' + re.escape(title) + r'\b', re.IGNORECASE)
+                    if title_pattern.search(text):
+                        # Mark the title by replacing spaces with underscores and adding prefix
+                        marked_title = "MOVIETITLE_" + "_".join(title.split())
+                        marked_text = title_pattern.sub(marked_title, marked_text)
+            
+            # Try named entity recognition as well
+            tokens = word_tokenize(text)
+            tagged = pos_tag(tokens)
+            try:
+                entities = ne_chunk(tagged)
+                for chunk in entities:
+                    if hasattr(chunk, 'label') and chunk.label() in ('ORGANIZATION', 'PERSON'):
+                        title = ' '.join([c[0] for c in chunk])
+                        if len(title.split()) > 1 and title.lower() not in self.movie_titles:
+                            title_pattern = re.compile(r'\b' + re.escape(title) + r'\b', re.IGNORECASE)
+                            marked_title = "MOVIETITLE_" + "_".join(title.split())
+                            marked_text = title_pattern.sub(marked_title, marked_text)
+            except Exception as entity_error:
+                logger.warning(f"Entity recognition error: {entity_error}")
+            
+            return marked_text
+        except Exception as e:
+            logger.error(f"Error in identify_movie_titles: {e}")
+            return text
+    
     def _handle_simple_cases(self, text):
         """Handle simple obvious cases directly"""
         text_lower = text.lower()
@@ -156,13 +219,35 @@ class SentimentEnsemble:
         obvious_negative = ["terrible", "awful", "horrible", "hate", "bad", "worst", 
                            "disappointing", "poor", "waste", "boring", "garbage"]
         
-        # Check for obvious positive terms without negation
-        if any(term in text_lower for term in obvious_positive) and not any(neg in text_lower for neg in ["not ", "n't ", "don't", "didn't", "doesn't"]):
-            return True, 1, 0.98  # Positive with high confidence
+        # Check for negation markers
+        negation_markers = ["not ", "n't ", "don't", "didn't", "doesn't"]
+        has_negation = any(marker in text_lower for marker in negation_markers)
+        
+        # Only do simple handling if no movie titles (to avoid misclassifying movie name mentions)
+        if not any(title in text_lower for title in self.movie_titles):
+            # Check for obvious positive terms without negation
+            if any(term in text_lower for term in obvious_positive) and not has_negation:
+                return True, 1, 0.98  # Positive with high confidence
+                
+            # Check for obvious negative terms without negation
+            if any(term in text_lower for term in obvious_negative) and not has_negation:
+                return True, 0, 0.98  # Negative with high confidence
+        
+        # Check for negated obvious terms (flips sentiment)
+        if has_negation:
+            # Look for negated negative terms (becomes positive)
+            for negation in negation_markers:
+                for term in obvious_negative:
+                    negated_pattern = negation + r'.*\b' + term
+                    if re.search(negated_pattern, text_lower) and not any(other_neg in text_lower.replace(negation, '') for other_neg in obvious_negative):
+                        return True, 1, 0.85  # Positive but with less confidence
             
-        # Check for obvious negative terms without negation
-        if any(term in text_lower for term in obvious_negative) and not any(neg in text_lower for neg in ["not ", "n't ", "don't", "didn't", "doesn't"]):
-            return True, 0, 0.98  # Negative with high confidence
+            # Look for negated positive terms (becomes negative)
+            for negation in negation_markers:
+                for term in obvious_positive:
+                    negated_pattern = negation + r'.*\b' + term
+                    if re.search(negated_pattern, text_lower) and not any(other_pos in text_lower.replace(negation, '') for other_pos in obvious_positive):
+                        return True, 0, 0.85  # Negative but with less confidence
             
         return False, None, None
     
@@ -210,22 +295,50 @@ class SentimentEnsemble:
     def process_contrast_markers(self, text):
         """Process text with contrast markers like 'but', 'however'"""
         try:
-            # List of contrast markers
-            contrast_markers = ["but", "however", "although", "though", "despite", "yet", "nevertheless", "still"]
+            # Comprehensive list of contrast markers
+            contrast_markers = [
+                "but", "however", "although", "though", "despite", "yet", "nevertheless", 
+                "still", "while", "whereas", "even though", "on the other hand",
+                "conversely", "on the contrary", "in contrast", "instead", "rather"
+            ]
             
             # Check if any contrast markers are present
             for marker in contrast_markers:
-                if f" {marker} " in f" {text} ":
-                    parts = text.split(f" {marker} ", 1)
-                    if len(parts) == 2:
-                        # Return the parts with weights
-                        return {
-                            "has_contrast": True,
-                            "before": parts[0].strip(),
-                            "after": parts[1].strip(),
-                            "before_weight": 0.3,  # Give less weight to what comes before the contrast marker
-                            "after_weight": 0.7    # Give more weight to what comes after the contrast marker
-                        }
+                # Use regex for better matching (with word boundaries)
+                pattern = r'\b' + re.escape(marker) + r'\b'
+                match = re.search(pattern, text, re.IGNORECASE)
+                
+                if match:
+                    # Split text at the marker
+                    marker_position = match.start()
+                    before_text = text[:marker_position].strip()
+                    after_text = text[marker_position:].strip()
+                    
+                    # Calculate weights based on position - later parts get more weight
+                    total_length = len(text)
+                    relative_position = marker_position / total_length if total_length > 0 else 0.5
+                    
+                    # Adjust weights based on position
+                    # If marker appears earlier, give more weight to what comes after
+                    if relative_position < 0.3:
+                        before_weight = 0.2
+                        after_weight = 0.8
+                    elif relative_position > 0.7:
+                        before_weight = 0.7
+                        after_weight = 0.3
+                    else:
+                        before_weight = 0.3
+                        after_weight = 0.7
+                    
+                    # Return the parts with weights
+                    return {
+                        "has_contrast": True,
+                        "before": before_text,
+                        "after": after_text,
+                        "before_weight": before_weight,
+                        "after_weight": after_weight,
+                        "contrast_marker": marker
+                    }
             
             # No contrast markers found
             return {
@@ -242,10 +355,14 @@ class SentimentEnsemble:
             }
     
     def clean_text(self, text):
-        """Enhanced text cleaning with negation handling"""
+        """Enhanced text cleaning with entity recognition and negation handling"""
         try:
+            # Handle potential movie titles first
+            text_with_titles = self.identify_movie_titles(text)
+            
             # Convert to lowercase
             text = text.lower()
+            
             # Remove special characters but keep apostrophes for negations
             text = re.sub(r'[^\w\s\']', ' ', text)
             
@@ -327,6 +444,10 @@ class SentimentEnsemble:
                 before_weight = contrast_info["before_weight"]
                 after_weight = contrast_info["after_weight"]
                 
+                logger.info(f"Contrast marker found: '{contrast_info.get('contrast_marker', 'unknown')}'")
+                logger.info(f"Before text: '{before_text}' (weight: {before_weight})")
+                logger.info(f"After text: '{after_text}' (weight: {after_weight})")
+                
                 # Process both parts and get weighted prediction
                 before_prediction = self._predict_simple_text(before_text, model, vectorizer, model_name)
                 after_prediction = self._predict_simple_text(after_text, model, vectorizer, model_name)
@@ -339,8 +460,13 @@ class SentimentEnsemble:
                 combined_score = before_score + after_score
                 final_prediction = 1 if combined_score > 0 else 0
                 
-                # Scale confidence based on combined score
-                confidence = min(0.5 + abs(combined_score) / 2, 0.99)
+                # For near-zero combined scores (close to neutral), reduce confidence
+                if -0.2 < combined_score < 0.2:
+                    # Map to range 0.4-0.6 for neutral sentiment
+                    confidence = 0.5 + (combined_score * 0.5)  # Maps -0.2 to 0.4, 0.2 to 0.6
+                else:
+                    # Scale confidence based on combined score - stronger signal = higher confidence
+                    confidence = min(0.5 + abs(combined_score) / 2, 0.95)
                 
                 # Get influential words (prioritize words after the contrast marker)
                 influential_words = after_prediction["influential_words"]
@@ -348,6 +474,7 @@ class SentimentEnsemble:
                     # Add some from the before part if needed
                     influential_words.extend(before_prediction["influential_words"][:3 - len(influential_words)])
                 
+                logger.info(f"Contrast final prediction: {final_prediction} with confidence {confidence:.2f}")
                 return final_prediction, confidence, influential_words
             else:
                 # No contrast marker, process the whole text
@@ -398,7 +525,7 @@ class SentimentEnsemble:
             
             # Calculate confidence based on the model type with more differentiation
             if model_name == 'naive_bayes':
-                # Naive Bayes tends to be more confident, so temper confidence slightly
+                # Naive Bayes tends to be more confident, so temper confidence
                 raw_confidence = probabilities[prediction]
                 confidence = raw_confidence * 0.85 if raw_confidence > 0.8 else raw_confidence * 0.95
             elif model_name == 'logistic_regression':
@@ -410,6 +537,11 @@ class SentimentEnsemble:
                     confidence = raw_confidence
             else:
                 confidence = probabilities[prediction]
+            
+            # Check for neutral range confidence
+            if 0.4 <= confidence <= 0.6:
+                # This is likely a neutral sentiment - let's make it less confident
+                confidence = 0.5 + (confidence - 0.5) * 0.5  # Compress toward 0.5
             
             # Ensure models have different confidence patterns
             if model_name == 'naive_bayes':
@@ -502,9 +634,19 @@ class SentimentEnsemble:
             # Normalize
             ensemble_score = weighted_sum / weight_sum if weight_sum > 0 else 0
             
-            # Convert to binary prediction and confidence
-            ensemble_prediction = 1 if ensemble_score > 0 else 0
-            ensemble_confidence = min(0.5 + abs(ensemble_score) / 2, 0.99)  # Scale to [0.5, 0.99] range
+            # Check for neutral sentiment
+            if -0.2 <= ensemble_score <= 0.2:
+                # This is likely a neutral sentiment
+                if ensemble_score >= 0:
+                    ensemble_prediction = 1
+                    ensemble_confidence = 0.5 + (ensemble_score * 0.5)  # Maps 0-0.2 to 0.5-0.6
+                else:
+                    ensemble_prediction = 0
+                    ensemble_confidence = 0.5 - (ensemble_score * 0.5)  # Maps -0.2-0 to 0.4-0.5
+            else:
+                # Clear positive or negative sentiment
+                ensemble_prediction = 1 if ensemble_score > 0 else 0
+                ensemble_confidence = min(0.5 + abs(ensemble_score) / 2, 0.95)  # Scale to [0.5, 0.95] range
             
             # Get influential words from the highest confidence model
             best_model = max(model_predictions.items(), key=lambda x: x[1]['confidence'])[0]
@@ -545,6 +687,13 @@ class SentimentEnsemble:
                         result.append({"word": word, "importance": 80.0, "sentiment": sentiment})
                 
                 return result[:5]
+            
+            # Check for movie titles and ignore them
+            for title in self.movie_titles:
+                title_pattern = r'\b' + re.escape(title) + r'\b'
+                if re.search(title_pattern, text, re.IGNORECASE):
+                    # Replace movie title with a placeholder for analysis
+                    text = re.sub(title_pattern, "MOVIE_TITLE", text, flags=re.IGNORECASE)
             
             # Get feature names based on vectorizer type
             try:
@@ -591,6 +740,12 @@ class SentimentEnsemble:
             word_importance = []
             for i in non_zero_features:
                 if i < len(feature_names) and i < len(importance):
+                    # Skip features that look like movie titles or stopwords
+                    feature = feature_names[i]
+                    if feature.startswith('movietitle_') or feature == 'movie_title':
+                        continue
+                        
+                    # Add to word importance list
                     word_importance.append((feature_names[i], importance[i]))
             
             # Sort by absolute importance and take top 5
@@ -600,7 +755,17 @@ class SentimentEnsemble:
             # Format the response
             result = []
             for word, score in top_words:
+                # Determine sentiment
                 sentiment = "positive" if score > 0 else "negative"
+                
+                # Check for negated words - their sentiment is flipped
+                if word.endswith('_neg'):
+                    base_word = word.replace('_neg', '')
+                    # Flip sentiment for negated words
+                    sentiment = "negative" if sentiment == "positive" else "positive"
+                    # Use the base word without the negation marker
+                    word = base_word
+                
                 # Scale the importance to a percentage between 60% and 95%
                 importance_score = 60 + min(abs(score) * 10, 35)  # Scaling factor for model_type
                 
