@@ -122,11 +122,14 @@ def analyze():
                 'important_words': important_words
             })
         
-        # Try using more advanced analysis with proper error handling
+        # Try using specific model prediction with proper error handling
         try:
-            # Try using the ensemble's predict method first
-            # This now includes padding to handle feature mismatches
-            prediction, confidence, important_words = ensemble.predict(text)
+            # Use the specific requested model (not the ensemble) for more diverse results
+            prediction, confidence, important_words = ensemble.predict_with_specific_model(text, model_type)
+            
+            if prediction is None:
+                raise ValueError(f"Model {model_type} returned None prediction")
+                
             sentiment = "Positive" if prediction == 1 else "Negative"
             confidence = confidence * 100  # Convert to percentage
             
@@ -139,11 +142,28 @@ def analyze():
                 'important_words': important_words
             })
         except Exception as e:
-            logger.error(f"Error in ensemble prediction: {str(e)}")
+            logger.error(f"Error in specific model prediction: {str(e)}")
             logger.error(traceback.format_exc())
             
-            # Fall back to simple case analysis
-            return analyze_simple_case(text, model_type)
+            # Fall back to ensemble prediction
+            try:
+                prediction, confidence, important_words = ensemble.predict(text)
+                sentiment = "Positive" if prediction == 1 else "Negative"
+                confidence = confidence * 100  # Convert to percentage
+                
+                logger.info(f"Using ensemble fallback for {text}: {sentiment} with {confidence}% confidence")
+                
+                return jsonify({
+                    'text': text,
+                    'sentiment': sentiment,
+                    'confidence': round(confidence, 2),
+                    'model': model_type + " (ensemble fallback)",
+                    'important_words': important_words
+                })
+            except Exception as nested_e:
+                logger.error(f"Error in ensemble fallback: {str(nested_e)}")
+                # Fall back to simple case analysis
+                return analyze_simple_case(text, model_type)
     except Exception as e:
         logger.error(f"Unhandled exception in analyze route: {str(e)}")
         logger.error(traceback.format_exc())
