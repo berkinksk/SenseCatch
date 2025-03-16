@@ -55,10 +55,12 @@ class SentimentEnsemble:
         }
         # Add common movie title list for entity recognition
         self.movie_titles = self._load_movie_titles()
+        # Add this line to the __init__ method before self._load_models()
+        self.movie_titles = self._load_movie_titles()
         self._load_models()
     
     def _load_movie_titles(self):
-        """Load a basic list of common movie titles"""
+        """Load a comprehensive list of movie titles from multiple sources"""
         # Start with a small default list
         titles = [
             "the godfather", "citizen kane", "casablanca", "gone with the wind",
@@ -69,15 +71,90 @@ class SentimentEnsemble:
             "the room", "the avengers", "jurassic park", "the lion king"
         ]
         
-        # Try to load from file if exists
-        try:
-            if os.path.exists('models/movie_titles.txt'):
-                with open('models/movie_titles.txt', 'r', encoding='utf-8') as f:
-                    titles = [line.strip().lower() for line in f if line.strip()]
-                logger.info(f"Loaded {len(titles)} movie titles from file")
-        except Exception as e:
-            logger.error(f"Error loading movie titles: {e}")
+        # First check if we have a cached movie titles file
+        movie_titles_path = 'models/movie_titles.txt'
         
+        if os.path.exists(movie_titles_path):
+            try:
+                with open(movie_titles_path, 'r', encoding='utf-8') as f:
+                    titles = [line.strip().lower() for line in f if line.strip()]
+                logger.info(f"Loaded {len(titles)} movie titles from cache file")
+                return titles
+            except Exception as e:
+                logger.error(f"Error loading movie titles from cache: {e}")
+        
+        # Try to fetch additional titles from multiple sources
+        try:
+            # Import necessary modules
+            import urllib.request
+            import re
+            import json
+            from time import sleep
+            
+            # URLs with movie lists - using different sources for diversity
+            urls = [
+                'https://www.imdb.com/chart/top/',  # Top rated movies
+                'https://www.imdb.com/chart/moviemeter/'  # Most popular movies
+            ]
+            
+            # Add headers to avoid being blocked
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+            }
+            
+            for url in urls:
+                try:
+                    req = urllib.request.Request(url, headers=headers)
+                    with urllib.request.urlopen(req, timeout=10) as response:
+                        html = response.read().decode('utf-8')
+                        
+                        # Extract movie titles using regex
+                        matches = re.findall(r'<a[^>]*>([^<]+)</a>', html)
+                        
+                        if matches:
+                            # Clean and add to titles list
+                            for title in matches:
+                                clean_title = re.sub(r'[^\w\s]', '', title).strip().lower()
+                                if clean_title and len(clean_title) > 3 and clean_title not in titles:
+                                    titles.append(clean_title)
+                    
+                    logger.info(f"Fetched movie titles from {url}")
+                    sleep(1)  # Be polite and don't hammer servers
+                    
+                except Exception as url_error:
+                    logger.warning(f"Error fetching from {url}: {url_error}")
+            
+            # Also try to use TMDB API if possible
+            tmdb_api_key = os.environ.get('TMDB_API_KEY')
+            if tmdb_api_key:
+                try:
+                    tmdb_url = f'https://api.themoviedb.org/3/movie/popular?api_key={tmdb_api_key}&language=en-US'
+                    req = urllib.request.Request(tmdb_url, headers=headers)
+                    with urllib.request.urlopen(req, timeout=10) as response:
+                        data = json.loads(response.read().decode('utf-8'))
+                        if 'results' in data:
+                            for movie in data['results']:
+                                title = movie.get('title', '').lower()
+                                if title and title not in titles:
+                                    titles.append(title)
+                    logger.info(f"Fetched movie titles from TMDB API")
+                except Exception as tmdb_error:
+                    logger.warning(f"Error fetching from TMDB API: {tmdb_error}")
+                
+        except Exception as e:
+            logger.warning(f"Could not fetch additional movie titles: {e}")
+        
+        # Save the compiled list to a file for future use
+        try:
+            with open(movie_titles_path, 'w', encoding='utf-8') as f:
+                for title in titles:
+                    f.write(title + '\n')
+            logger.info(f"Saved {len(titles)} movie titles to {movie_titles_path}")
+        except Exception as save_error:
+            logger.error(f"Error saving movie titles: {save_error}")
+        
+        logger.info(f"Using {len(titles)} movie titles for entity recognition")
         return titles
     
     def _load_feature_dimensions(self):
@@ -177,10 +254,13 @@ class SentimentEnsemble:
             self.lexicon = None
     
     def identify_movie_titles(self, text):
-        """Identify potential movie titles in text"""
+        """Identify potential movie titles in text and handle them specially"""
         try:
             # Check against our movie titles list
             marked_text = text
+            identified_titles = []
+            
+            # First pass: find direct matches from our movie titles database
             for title in self.movie_titles:
                 if len(title.split()) > 1:  # Only multi-word titles to avoid false positives
                     title_pattern = re.compile(r'\b' + re.escape(title) + r'\b', re.IGNORECASE)
@@ -188,21 +268,71 @@ class SentimentEnsemble:
                         # Mark the title by replacing spaces with underscores and adding prefix
                         marked_title = "MOVIETITLE_" + "_".join(title.split())
                         marked_text = title_pattern.sub(marked_title, marked_text)
+                        identified_titles.append(title)
             
-            # Try named entity recognition as well
+            # Second pass: try named entity recognition for titles not in our database
             tokens = word_tokenize(text)
             tagged = pos_tag(tokens)
+            
             try:
                 entities = ne_chunk(tagged)
                 for chunk in entities:
-                    if hasattr(chunk, 'label') and chunk.label() in ('ORGANIZATION', 'PERSON'):
+                    if hasattr(chunk, 'label') and chunk.label() in ('ORGANIZATION', 'PERSON', 'GPE'):
                         title = ' '.join([c[0] for c in chunk])
-                        if len(title.split()) > 1 and title.lower() not in self.movie_titles:
-                            title_pattern = re.compile(r'\b' + re.escape(title) + r'\b', re.IGNORECASE)
-                            marked_title = "MOVIETITLE_" + "_".join(title.split())
-                            marked_text = title_pattern.sub(marked_title, marked_text)
+                        # Only consider if title has multiple words and isn't already identified
+                        if len(title.split()) > 1 and title.lower() not in self.movie_titles and title not in identified_titles:
+                            # Additional heuristics to determine if it's likely a movie title
+                            is_likely_title = False
+                            
+                            # Check if it contains common movie title words
+                            movie_words = ['movie', 'film', 'documentary', 'trilogy', 'sequel', 'series']
+                            
+                            # Check if it follows patterns like "watched [X]" or "[X] is a good movie"
+                            sentence_parts = text.lower().split('.')
+                            for part in sentence_parts:
+                                if title.lower() in part:
+                                    movie_verbs = ['watched', 'saw', 'viewing', 'seeing', 'rated', 'directed']
+                                    movie_contexts = ['is a good', 'is a great', 'is a bad', 'is a terrible', 
+                                                     'a film by', 'the movie', 'the film', 'tickets for']
+                                    
+                                    if any(verb in part for verb in movie_verbs) or any(context in part for context in movie_contexts):
+                                        is_likely_title = True
+                                        break
+                            
+                            # Apply the movie title marking if it passes our heuristics
+                            if is_likely_title:
+                                title_pattern = re.compile(r'\b' + re.escape(title) + r'\b', re.IGNORECASE)
+                                marked_title = "MOVIETITLE_" + "_".join(title.split())
+                                marked_text = title_pattern.sub(marked_title, marked_text)
+                                identified_titles.append(title)
+                                
+                                # Add to our movie titles database for future use
+                                if title.lower() not in self.movie_titles:
+                                    self.movie_titles.append(title.lower())
             except Exception as entity_error:
                 logger.warning(f"Entity recognition error: {entity_error}")
+            
+            # Special handling for sentences containing movie titles
+            if identified_titles:
+                logger.info(f"Identified movie titles: {', '.join(identified_titles)}")
+                
+                # Break the text into sentences
+                sentences = text.split('.')
+                for i, sentence in enumerate(sentences):
+                    # Check if the sentence contains a movie title
+                    if any(title.lower() in sentence.lower() for title in identified_titles):
+                        # Find the movie title mentioned in this sentence
+                        title_in_sentence = next((title for title in identified_titles if title.lower() in sentence.lower()), None)
+                        
+                        # Adjust how sentiment is processed for this sentence
+                        # We'll mark sentences with movie titles to be processed differently
+                        mark = "MOVIE_TITLE_SENTENCE"
+                        
+                        # Replace the sentence in the marked text (preserve original case)
+                        original_sentence = sentences[i]
+                        if original_sentence in marked_text:
+                            # Add the special marker to the beginning of the sentence
+                            marked_text = marked_text.replace(original_sentence, f"{mark} {original_sentence}")
             
             return marked_text
         except Exception as e:
@@ -360,11 +490,37 @@ class SentimentEnsemble:
             # Handle potential movie titles first
             text_with_titles = self.identify_movie_titles(text)
             
-            # Convert to lowercase
-            text = text.lower()
+            # Store markers for movie title sentences to restore later
+            movie_title_sentences = []
+            for sentence in text_with_titles.split('.'):
+                if sentence.strip().startswith("MOVIE_TITLE_SENTENCE"):
+                    movie_title_sentences.append(sentence.strip())
             
-            # Remove special characters but keep apostrophes for negations
-            text = re.sub(r'[^\w\s\']', ' ', text)
+            # Extract and preserve MOVIETITLE_* patterns
+            movie_title_markers = {}
+            movie_title_pattern = re.compile(r'(MOVIETITLE_[a-zA-Z0-9_]+)')
+            for match in movie_title_pattern.finditer(text_with_titles):
+                marker = match.group(1)
+                movie_title_markers[marker] = marker
+            
+            # Convert to lowercase
+            text = text_with_titles.lower()
+            
+            # Remove special characters but keep apostrophes for negations and preserve movie title markers
+            def replace_special_chars(match):
+                if match.group(0) in movie_title_markers:
+                    return match.group(0)
+                else:
+                    return ' '
+                
+            text = re.sub(r'[^\w\s\'MOVIETITLE_]|MOVIE_TITLE_SENTENCE', replace_special_chars, text)
+            
+            # Restore movie title sentence markers
+            for sentence in movie_title_sentences:
+                # Find the matching sentence without the marker and replace it
+                sentence_without_marker = sentence.replace("MOVIE_TITLE_SENTENCE ", "")
+                if sentence_without_marker in text:
+                    text = text.replace(sentence_without_marker, sentence)
             
             # Try to apply negation handling
             try:
@@ -489,16 +645,49 @@ class SentimentEnsemble:
     def _predict_simple_text(self, text, model, vectorizer, model_name):
         """Process a simple text segment with no contrast markers"""
         try:
+            original_text = text
+            
+            # Check for movie title sentence markers
+            has_movie_title = "MOVIE_TITLE_SENTENCE" in text
+            movie_title_pattern = re.compile(r'MOVIETITLE_[a-zA-Z0-9_]+')
+            has_movie_marker = bool(movie_title_pattern.search(text))
+            
+            if has_movie_title or has_movie_marker:
+                logger.info("Text contains movie title references - applying special handling")
+                
+                # Split into sentences
+                sentences = text.split('.')
+                movie_sentences = []
+                non_movie_sentences = []
+                
+                # Separate movie-related sentences from others
+                for sentence in sentences:
+                    if "MOVIE_TITLE_SENTENCE" in sentence or movie_title_pattern.search(sentence):
+                        movie_sentences.append(sentence)
+                    else:
+                        non_movie_sentences.append(sentence)
+                
+                # Extract any movie title markers to convert back to normal text for analysis
+                text_for_analysis = text
+                
+                # Remove MOVIE_TITLE_SENTENCE markers but keep the sentence
+                text_for_analysis = text_for_analysis.replace("MOVIE_TITLE_SENTENCE ", "")
+                
+                # Replace MOVIETITLE_X_Y with "this movie" or "this film"
+                text_for_analysis = re.sub(r'MOVIETITLE_[a-zA-Z0-9_]+', "this movie", text_for_analysis)
+            else:
+                text_for_analysis = text
+            
             # Get lexicon features
             lexicon_features = None
             if hasattr(self, 'lexicon') and self.lexicon:
                 try:
-                    lexicon_features = self.lexicon.extract_all_features(text)
+                    lexicon_features = self.lexicon.extract_all_features(text_for_analysis)
                 except Exception as e:
                     logger.error(f"Error extracting lexicon features: {e}")
             
             # Transform text
-            X = vectorizer.transform([text])
+            X = vectorizer.transform([text_for_analysis])
             
             # Add lexicon features if available
             if lexicon_features and model_name in self.dict_vectorizers:
@@ -519,56 +708,72 @@ class SentimentEnsemble:
             if expected_features > 0 and X.shape[1] != expected_features:
                 X = self._pad_features(X, expected_features)
             
-            # Get prediction and probability
-            prediction = model.predict(X)[0]
-            probabilities = model.predict_proba(X)[0]
-            
-            # Calculate confidence based on the model type with more differentiation
-            if model_name == 'naive_bayes':
-                # Naive Bayes tends to be more confident, so temper confidence
-                raw_confidence = probabilities[prediction]
-                confidence = raw_confidence * 0.85 if raw_confidence > 0.8 else raw_confidence * 0.95
-            elif model_name == 'logistic_regression':
-                # Logistic Regression is usually more calibrated
-                raw_confidence = probabilities[prediction]
-                if prediction == 1:  # Positive prediction
-                    confidence = min(raw_confidence * 1.05, 0.99)
-                else:
-                    confidence = raw_confidence
-            else:
-                confidence = probabilities[prediction]
-            
-            # Check for neutral range confidence
-            if 0.4 <= confidence <= 0.6:
-                # This is likely a neutral sentiment - let's make it less confident
-                confidence = 0.5 + (confidence - 0.5) * 0.5  # Compress toward 0.5
-            
-            # Ensure models have different confidence patterns
-            if model_name == 'naive_bayes':
-                # Add small variation to make NB more confident for strong signals,
-                # less confident for weak signals
-                if confidence > 0.85:
-                    confidence = min(confidence * 1.1, 0.99)
-                elif confidence < 0.65:
-                    confidence = confidence * 0.9
-            
-            # Get influential words
-            influential_words = self._extract_influential_words(text, prediction, model_name)
-            
-            return {
-                "prediction": prediction,
-                "confidence": confidence,
-                "probabilities": probabilities,
-                "influential_words": influential_words
-            }
+            # Make prediction
+            try:
+                # Binary prediction
+                prediction = model.predict(X)[0]
+                
+                # Try to get probability, fall back to 0.7 if not available
+                try:
+                    if hasattr(model, 'predict_proba') and callable(getattr(model, 'predict_proba')):
+                        probs = model.predict_proba(X)[0]
+                        confidence = probs[prediction] if len(probs) > prediction else 0.7
+                    else:
+                        confidence = 0.7
+                except Exception as e:
+                    logger.warning(f"Error getting probability: {e}")
+                    confidence = 0.7
+                
+                # For movie title containing sentences, adjust confidence
+                if has_movie_title or has_movie_marker:
+                    # Movie titles themselves should not strongly influence sentiment
+                    # If there are more non-movie sentences than movie sentences, reduce movie influence
+                    if len(non_movie_sentences) > len(movie_sentences):
+                        # Reduce confidence slightly as movie titles might be confusing the model
+                        confidence = min(confidence, 0.85)
+                    else:
+                        # Input is mostly about movies - adjust less
+                        pass
+                
+                # Get most influential words
+                influential_words = self._extract_influential_words(original_text, prediction, model_name)
+                
+                # Remove movie title markers from influential words
+                influential_words = [word for word in influential_words 
+                                    if not word.startswith('movietitle_') and not word == 'movie_title']
+                
+                # Adjust neutral classification (confidence between 0.4 and 0.6)
+                if 0.4 <= confidence <= 0.6:
+                    logger.info(f"Neutral sentiment detected with confidence {confidence:.2f}")
+                    # Return neutral prediction with special format
+                    return {
+                        "prediction": 0.5,  # 0.5 signals neutral
+                        "confidence": confidence,
+                        "influential_words": influential_words,
+                        "is_neutral": True
+                    }
+                
+                return {
+                    "prediction": prediction,
+                    "confidence": confidence,
+                    "influential_words": influential_words,
+                    "is_neutral": False
+                }
+            except Exception as pred_error:
+                logger.error(f"Prediction error: {pred_error}")
+                return {
+                    "prediction": 1,  # Default positive
+                    "confidence": 0.51,  # Low confidence
+                    "influential_words": [],
+                    "is_neutral": False
+                }
         except Exception as e:
             logger.error(f"Error in _predict_simple_text: {str(e)}")
-            logger.error(traceback.format_exc())
             return {
-                "prediction": 1,  # Default positive
+                "prediction": 1,
                 "confidence": 0.51,
-                "probabilities": [0.49, 0.51],
-                "influential_words": []
+                "influential_words": [],
+                "is_neutral": False
             }
     
     def predict(self, text, specific_model=None):
@@ -660,7 +865,7 @@ class SentimentEnsemble:
             return 1, 0.51, []
     
     def _extract_influential_words(self, text, prediction, model_type):
-        """Extract words that influenced the prediction the most"""
+        """Extract words that influenced the prediction the most with better handling"""
         try:
             if model_type not in self.models or model_type not in self.vectorizers:
                 # Fall back to the first available model
@@ -671,6 +876,13 @@ class SentimentEnsemble:
             model = self.models[model_type]
             vectorizer = self.vectorizers[model_type]
             
+            # Check if the text contains any words
+            if not text.strip():
+                return []
+                
+            # Check for negation in the text
+            has_negation = any(neg in text.lower() for neg in ['not', "n't", "don't", "didn't", "doesn't"])
+            
             # If no vectorizer is available, use a simple approach
             if vectorizer is None:
                 words = simple_tokenize(text)
@@ -680,19 +892,20 @@ class SentimentEnsemble:
                 result = []
                 for word in words:
                     if word in positive_words:
-                        sentiment = "positive" if prediction == 1 else "negative"
+                        # Handle negation for simple approach
+                        sentiment = "negative" if has_negation else "positive"
                         result.append({"word": word, "importance": 80.0, "sentiment": sentiment})
                     elif word in negative_words:
-                        sentiment = "negative" if prediction == 0 else "positive"
+                        # Handle negation for simple approach
+                        sentiment = "positive" if has_negation else "negative"
                         result.append({"word": word, "importance": 80.0, "sentiment": sentiment})
                 
                 return result[:5]
             
-            # Check for movie titles and ignore them
+            # Check for movie titles and mark them
             for title in self.movie_titles:
                 title_pattern = r'\b' + re.escape(title) + r'\b'
                 if re.search(title_pattern, text, re.IGNORECASE):
-                    # Replace movie title with a placeholder for analysis
                     text = re.sub(title_pattern, "MOVIE_TITLE", text, flags=re.IGNORECASE)
             
             # Get feature names based on vectorizer type
@@ -708,22 +921,25 @@ class SentimentEnsemble:
                 logger.error(f"Error getting feature names: {e}")
                 return []
             
-            # Transform the text
+            # Transform the text for feature extraction
             X = vectorizer.transform([text])
             
             # Get feature importance based on model type
             try:
                 if hasattr(model, 'coef_'):  # For logistic regression
-                    # For binary classification, get weights for the positive class
+                    # For binary classification, get weights for the predicted class
                     coefficients = model.coef_[0]
                     # Sort features by importance for the predicted class
-                    importance = coefficients if prediction == 1 else -coefficients
+                    if prediction == 1:
+                        importance = coefficients  # Positive importance for positive prediction
+                    else:
+                        importance = -coefficients  # Negative importance for negative prediction
                     
                 elif hasattr(model, 'feature_log_prob_'):  # For Naive Bayes
-                    # Calculate log probability differences between positive and negative classes
+                    # Calculate log probability differences between classes
                     importance = model.feature_log_prob_[1] - model.feature_log_prob_[0]
-                    if prediction == 0:  # For negative predictions, reverse importance
-                        importance = -importance
+                    if prediction == 0:  # For negative predictions
+                        importance = -importance  # Reverse importance
                 else:
                     return []  # Unsupported model type
             except Exception as e:
@@ -740,45 +956,59 @@ class SentimentEnsemble:
             word_importance = []
             for i in non_zero_features:
                 if i < len(feature_names) and i < len(importance):
-                    # Skip features that look like movie titles or stopwords
                     feature = feature_names[i]
+                    
+                    # Skip movie titles or stopwords
                     if feature.startswith('movietitle_') or feature == 'movie_title':
                         continue
-                        
-                    # Add to word importance list
-                    word_importance.append((feature_names[i], importance[i]))
+                    
+                    # Skip common stopwords that aren't useful for sentiment
+                    if feature in ['the', 'a', 'an', 'in', 'on', 'at', 'of', 'to', 'and', 'or', 'but', 'because', 'as', 'if']:
+                        continue
+                    
+                    # Add to word importance with score
+                    word_importance.append((feature, importance[i]))
             
             # Sort by absolute importance and take top 5
             word_importance.sort(key=lambda x: abs(x[1]), reverse=True)
             top_words = word_importance[:5]
             
-            # Format the response
+            # Format the response with proper handling for negation
             result = []
             for word, score in top_words:
-                # Determine sentiment
-                sentiment = "positive" if score > 0 else "negative"
+                # Check if this is a negated word
+                is_negated = word.endswith('_neg')
+                base_word = word.replace('_neg', '')
                 
-                # Check for negated words - their sentiment is flipped
-                if word.endswith('_neg'):
-                    base_word = word.replace('_neg', '')
-                    # Flip sentiment for negated words
-                    sentiment = "negative" if sentiment == "positive" else "positive"
-                    # Use the base word without the negation marker
-                    word = base_word
+                # Determine correct sentiment based on score and negation context
+                if has_negation or is_negated:
+                    # If the word is negated or in a negation context
+                    sentiment = "negative" if score > 0 else "positive"
+                else:
+                    # Normal sentiment assignment
+                    sentiment = "positive" if score > 0 else "negative"
                 
-                # Scale the importance to a percentage between 60% and 95%
-                importance_score = 60 + min(abs(score) * 10, 35)  # Scaling factor for model_type
+                # For influential words, ensure the score is appropriate for the actual sentiment
+                # A word with a negative score should be labeled negative, etc.
+                final_sentiment = "positive" if score > 0 else "negative"
                 
-                # Adjust importance based on model type
+                # If this is a negated word, display the base word without _neg
+                display_word = base_word if is_negated else word
+                
+                # Scale importance to a percentage between 60% and 95%
+                importance_score = 60 + min(abs(score) * 10, 35)
+                
+                # Adjust based on model type
                 if model_type == 'naive_bayes':
-                    importance_score = min(importance_score * 0.95, 95)  # Slightly lower confidence for NB
+                    importance_score = min(importance_score * 0.95, 95)
                 elif model_type == 'logistic_regression':
-                    importance_score = min(importance_score * 1.05, 95)  # Slightly higher for LR
+                    importance_score = min(importance_score * 1.05, 95)
                 
+                # Add to result
                 result.append({
-                    "word": word.replace('_NEG', ''),  # Remove _NEG suffix for display
+                    "word": display_word,
                     "importance": float(importance_score),
-                    "sentiment": sentiment
+                    "sentiment": final_sentiment
                 })
             
             return result
