@@ -22,6 +22,7 @@ from scipy.sparse import hstack
 from sentiment_lexicon import SentimentLexiconFeatures
 from sklearn.calibration import CalibratedClassifierCV
 import logging
+from nltk.tree import Tree  # Add this import for named entity recognition
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -70,9 +71,11 @@ def identify_movie_titles(text):
         
         title_spans = []
         for chunk in entities:
-            if hasattr(chunk, 'label') and chunk.label() == 'ORGANIZATION' or chunk.label() == 'PERSON':
-                # This could be a movie title
-                title_spans.append(' '.join([c[0] for c in chunk]))
+            # Check if the chunk is a named entity (Tree) and has a label attribute
+            if isinstance(chunk, Tree) and hasattr(chunk, 'label'):
+                if chunk.label() == 'ORGANIZATION' or chunk.label() == 'PERSON':
+                    # This could be a movie title
+                    title_spans.append(' '.join([c[0] for c in chunk]))
         
         # Combine both approaches
         all_potential_titles = potential_titles + title_spans
