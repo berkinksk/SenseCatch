@@ -456,12 +456,21 @@ class SentimentEnsemble:
                     before_text = text[:marker_position].strip()
                     after_text = text[marker_position:].strip()
                     
-                    # Calculate weights based on position - later parts get more weight
+                    # Check for negative sentiment words in the after text
+                    negative_terms = ["bad", "terrible", "awful", "horrible", "worst", "hate", 
+                                      "dislike", "poor", "waste", "boring", "lazy", "uninspired",
+                                      "disappointed", "mediocre", "ugly", "problem", "issue", 
+                                      "worse", "irritating", "annoying", "frustrating"]
+                    
+                    # Count negative terms in after text (after the contrast marker)
+                    after_text_lower = after_text.lower()
+                    neg_count = sum(1 for term in negative_terms if term in after_text_lower)
+                    
+                    # Calculate weights based on position and negativity
                     total_length = len(text)
                     relative_position = marker_position / total_length if total_length > 0 else 0.5
                     
-                    # Adjust weights based on position
-                    # If marker appears earlier, give more weight to what comes after
+                    # Default weights based on position
                     if relative_position < 0.3:
                         before_weight = 0.2
                         after_weight = 0.8
@@ -471,6 +480,16 @@ class SentimentEnsemble:
                     else:
                         before_weight = 0.3
                         after_weight = 0.7
+                    
+                    # Adjust weights if there are negative terms after the contrast marker
+                    if neg_count > 0:
+                        # Strengthen the weight of the after text, especially with multiple negative terms
+                        neg_factor = min(neg_count * 0.15, 0.5)  # Cap at 0.5 additional weight
+                        
+                        # Rebalance weights to emphasize the negative after text
+                        total = before_weight + after_weight
+                        before_weight = max(before_weight - neg_factor, 0.1)  # Keep at least 0.1
+                        after_weight = total - before_weight
                     
                     # Return the parts with weights
                     return {
