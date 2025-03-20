@@ -67,7 +67,9 @@ document.addEventListener('DOMContentLoaded', () => {
         if (result.important_words && result.important_words.length > 0) {
             wordChips = result.important_words.map(wordInfo => {
                 const chipClass = wordInfo.sentiment === 'positive' ? 'positive' : 'negative';
-                return `<span class="word-chip ${chipClass}">${wordInfo.word}</span>`;
+                // Add strikethrough styling for negated words
+                const negatedStyle = wordInfo.negated ? 'text-decoration: line-through;' : '';
+                return `<span class="word-chip ${chipClass}" style="${negatedStyle}" title="${wordInfo.negated ? 'Negated' : ''}">${wordInfo.word}</span>`;
             }).join('');
         } else {
             wordChips = '<span class="no-words">No influential words found</span>';

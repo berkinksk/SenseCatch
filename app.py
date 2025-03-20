@@ -108,10 +108,23 @@ def analyze():
                 if word in ["awesome", "amazing", "excellent", "great", "good", "love", 
                            "terrible", "awful", "horrible", "hate", "bad", "worst"]:
                     sentiment_type = "positive" if word in ["awesome", "amazing", "excellent", "great", "good", "love"] else "negative"
+                    # Check for nearby negation words
+                    words = simple_tokenize(text)
+                    negated = False
+                    
+                    if word in words:
+                        word_index = words.index(word)
+                        # Check up to 3 words before this word for negation
+                        for i in range(max(0, word_index-3), word_index):
+                            if words[i] in ["not", "n't", "don't", "didn't", "doesn't", "never", "no"]:
+                                negated = True
+                                break
+                    
                     important_words.append({
                         "word": word,
                         "importance": 95.0,
-                        "sentiment": sentiment_type
+                        "sentiment": sentiment_type,
+                        "negated": negated
                     })
             
             important_words = important_words[:5]  # Take up to 5 words
@@ -204,8 +217,20 @@ def analyze_simple_case(text, model_type):
     neg_count = sum(1 for term in negative_terms if term in text_lower)
     
     # Check for negation
-    negations = ["not", "don't", "doesn't", "didn't", "no", "never"]
+    negations = ["not", "don't", "doesn't", "didn't", "no", "never", "cannot", "nor", "neither"]
     has_negation = any(neg in text_lower for neg in negations)
+    
+    # Identify words in negation scope
+    words = simple_tokenize(text)
+    negation_scope = {}
+    for i, word in enumerate(words):
+        if word in negations or any(neg in word for neg in ["n't"]):
+            # Mark the next 3 words (or until end of sentence) as in negation scope
+            for j in range(i+1, min(i+4, len(words))):
+                negation_scope[words[j]] = True
+                # End negation scope at punctuation
+                if words[j].endswith(('.', '!', '?', ',')):
+                    break
     
     # Check for contrast markers
     contrast_markers = ["but", "however", "although", "though", "despite", "yet"]
@@ -257,20 +282,24 @@ def analyze_simple_case(text, model_type):
     
     # Generate simple word importance
     important_words = []
-    words = simple_tokenize(text)
     
     for word in words:
+        # Check if word is in negation scope
+        word_in_negation = word in negation_scope
+        
         if word in positive_terms:
             important_words.append({
                 "word": word,
                 "importance": 80.0,
-                "sentiment": "positive" if not has_negation else "negative"
+                "sentiment": "positive",  # Keep raw sentiment for color coding
+                "negated": word_in_negation  # Add negation information
             })
         elif word in negative_terms:
             important_words.append({
                 "word": word,
                 "importance": 80.0,
-                "sentiment": "negative" if not has_negation else "positive"
+                "sentiment": "negative",  # Keep raw sentiment for color coding
+                "negated": word_in_negation  # Add negation information
             })
     
     important_words = important_words[:5]  # Limit to 5 words

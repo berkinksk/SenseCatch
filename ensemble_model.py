@@ -921,7 +921,7 @@ class SentimentEnsemble:
             return 1, 0.51, []
     
     def _extract_influential_words(self, text, prediction, model_type):
-        """Extract words that influenced the prediction the most with better handling"""
+        """Extract words that influenced the prediction the most with improved handling"""
         try:
             if model_type not in self.models or model_type not in self.vectorizers:
                 # Fall back to the first available model
@@ -936,8 +936,11 @@ class SentimentEnsemble:
             if not text.strip():
                 return []
                 
-            # Check for negation in the text
-            has_negation = any(neg in text.lower() for neg in ['not', "n't", "don't", "didn't", "doesn't"])
+            # Enhanced negation detection - check more complex patterns
+            negation_words = ['not', "n't", "don't", "didn't", "doesn't", "cannot", "never", "no", "nor", "neither"]
+            has_negation = any(neg in ' ' + text.lower() + ' ' for neg in [' ' + neg + ' ' for neg in negation_words])
+            
+            negation_scope = {}  # Track words under the scope of negation
             
             # If no vectorizer is available, use a simple approach
             if vectorizer is None:
@@ -1002,6 +1005,19 @@ class SentimentEnsemble:
                 logger.error(f"Error extracting feature importance: {e}")
                 return []
             
+            # Process the original text to identify negation scopes
+            words = simple_tokenize(text.lower())
+            in_negation_scope = False
+            for i, word in enumerate(words):
+                if word in negation_words or any(neg in word for neg in ["n't", "not"]):
+                    in_negation_scope = True
+                    # Mark the next 3 words (or until end of sentence) as in negation scope
+                    for j in range(i+1, min(i+4, len(words))):
+                        negation_scope[words[j]] = True
+                        # End negation scope at punctuation
+                        if words[j].endswith(('.', '!', '?', ',')):
+                            break
+            
             # Get non-zero features in the input text
             non_zero_features = X.nonzero()[1]
             
@@ -1036,35 +1052,33 @@ class SentimentEnsemble:
                 is_negated = word.endswith('_neg')
                 base_word = word.replace('_neg', '')
                 
-                # Determine correct sentiment based on score and negation context
-                if has_negation or is_negated:
-                    # If the word is negated or in a negation context
-                    sentiment = "negative" if score > 0 else "positive"
-                else:
-                    # Normal sentiment assignment
-                    sentiment = "positive" if score > 0 else "negative"
+                # Determine the word's contribution to the sentiment
+                # For consistency with UI, words should be colored based on their raw contribution
+                # This means words that contribute to positive sentiment should be green,
+                # and words that contribute to negative sentiment should be red
+                raw_sentiment = "positive" if score > 0 else "negative"
                 
-                # For influential words, ensure the score is appropriate for the actual sentiment
-                # A word with a negative score should be labeled negative, etc.
-                final_sentiment = "positive" if score > 0 else "negative"
+                # Check if word is in negation scope or has negation marker
+                word_in_negation = is_negated or base_word in negation_scope
                 
-                # If this is a negated word, display the base word without _neg
+                # The actual displayed word
                 display_word = base_word if is_negated else word
                 
                 # Scale importance to a percentage between 60% and 95%
-                importance_score = 60 + min(abs(score) * 10, 35)
+                importance_score = 60 + min(abs(score) * 15, 35)  # Increased multiplier for better spread
                 
-                # Adjust based on model type
+                # Adjust based on model type - giving more weight to the model's specific strengths
                 if model_type == 'naive_bayes':
-                    importance_score = min(importance_score * 0.95, 95)
+                    importance_score = min(importance_score * 1.0, 95)  # NB has good base accuracy
                 elif model_type == 'logistic_regression':
-                    importance_score = min(importance_score * 1.05, 95)
+                    importance_score = min(importance_score * 1.1, 95)  # LR tends to have stronger features
                 
-                # Add to result
+                # Add to result with the raw sentiment (for UI coloring)
                 result.append({
                     "word": display_word,
                     "importance": float(importance_score),
-                    "sentiment": final_sentiment
+                    "sentiment": raw_sentiment,
+                    "negated": word_in_negation
                 })
             
             return result
