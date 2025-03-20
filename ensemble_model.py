@@ -796,7 +796,18 @@ class SentimentEnsemble:
                 
                 # Remove movie title markers from influential words
                 influential_words = [word for word in influential_words 
-                                    if not word.startswith('movietitle_') and not word == 'movie_title']
+                                    if isinstance(word, str) and not word.startswith('movietitle_') and not word == 'movie_title']
+                
+                # Check if influential_words contains dictionary objects (the expected format)
+                if influential_words and isinstance(influential_words[0], dict):
+                    # We have the newer format - no filtering needed
+                    pass
+                else:
+                    # Handle older format or mixed format
+                    influential_words = [word for word in influential_words if not isinstance(word, dict) or 
+                                        (isinstance(word, dict) and 'word' in word and 
+                                         not word['word'].startswith('movietitle_') and 
+                                         not word['word'] == 'movie_title')]
                 
                 # Adjust neutral classification (confidence between 0.4 and 0.6)
                 if 0.4 <= confidence <= 0.6:
