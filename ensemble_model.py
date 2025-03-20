@@ -352,45 +352,88 @@ class SentimentEnsemble:
             return text
     
     def _handle_simple_cases(self, text):
-        """Handle simple obvious cases directly"""
+        """Handle obvious cases that don't need full model prediction"""
         text_lower = text.lower()
         
-        # Direct pattern matching for very obvious cases
-        obvious_positive = ["awesome", "amazing", "excellent", "great", "love", "wonderful", 
-                           "brilliant", "fantastic", "superb", "perfect", "best"]
-        obvious_negative = ["terrible", "awful", "horrible", "hate", "bad", "worst", 
-                           "disappointing", "poor", "waste", "boring", "garbage"]
+        # Very positive phrases
+        very_positive = [
+            "love it", "amazing", "excellent", "fantastic", "awesome", 
+            "best ever", "perfect", "brilliant", "outstanding", "superb",
+            "wonderful", "incredible", "terrific", "exceptional", "magnificent",
+            "absolutely love", "highly recommend", "definitely recommend",
+            "10/10", "five stars", "5 stars", "5/5", "loved every"
+        ]
         
-        # Check for negation markers
-        negation_markers = ["not ", "n't ", "don't", "didn't", "doesn't"]
-        has_negation = any(marker in text_lower for marker in negation_markers)
+        # Very negative phrases
+        very_negative = [
+            "hate it", "terrible", "awful", "horrible", "worst ever", 
+            "waste of", "terrible", "rubbish", "garbage", "junk", 
+            "disappointed", "disappointing", "absolutely hate", "cannot stand",
+            "would not recommend", "don't recommend", "0/10", "zero stars",
+            "0 stars", "0/5", "avoid this", "stay away", "never again",
+            "wouldn't recommend", "cannot recommend", "would never recommend",
+            "broke immediately", "broke within", "failed immediately", "doesn't work"
+        ]
         
-        # Only do simple handling if no movie titles (to avoid misclassifying movie name mentions)
-        if not any(title in text_lower for title in self.movie_titles):
-            # Check for obvious positive terms without negation
-            if any(term in text_lower for term in obvious_positive) and not has_negation:
-                return True, 1, 0.98  # Positive with high confidence
+        # Check for negation modifiers
+        negation_words = ["not", "isn't", "aren't", "wasn't", "weren't", "don't", 
+                         "doesn't", "didn't", "can't", "cannot", "couldn't", "won't",
+                         "wouldn't", "shouldn't", "never", "no", "nor", "none", "nothing"]
+        
+        # Check for recommendation context
+        recommendation_context = ["recommend", "suggestion", "advised", "advise", "suggest"]
+        
+        # Direct positive match (check that it's not negated)
+        is_negated = any(neg + " " in " " + text_lower + " " for neg in negation_words)
+        
+        # Strong negation phrases take precedence if found
+        for neg_phrase in very_negative:
+            if neg_phrase in text_lower:
+                # If it's a recommendation phrase, it's already negative
+                if any(rec in neg_phrase for rec in recommendation_context):
+                    return True, 0, 0.92
+                return True, 0, 0.90
+        
+        # Positive phrases have more complex rules with negation
+        for pos_phrase in very_positive:
+            if pos_phrase in text_lower:
+                # Check if the positive phrase is negated
+                for neg in negation_words:
+                    # Check if negation word appears close to the positive phrase
+                    neg_pos = text_lower.find(neg + " ")
+                    phrase_pos = text_lower.find(pos_phrase)
+                    if neg_pos != -1 and phrase_pos != -1:
+                        # If negation is within 5 words of the positive phrase
+                        if 0 <= phrase_pos - neg_pos <= 30:  # Approx 5 words with spaces
+                            # Negated positive is negative
+                            return True, 0, 0.85
                 
-            # Check for obvious negative terms without negation
-            if any(term in text_lower for term in obvious_negative) and not has_negation:
-                return True, 0, 0.98  # Negative with high confidence
+                # If not negated, it's positive
+                return True, 1, 0.88
         
-        # Check for negated obvious terms (flips sentiment)
-        if has_negation:
-            # Look for negated negative terms (becomes positive)
-            for negation in negation_markers:
-                for term in obvious_negative:
-                    negated_pattern = negation + r'.*\b' + term
-                    if re.search(negated_pattern, text_lower) and not any(other_neg in text_lower.replace(negation, '') for other_neg in obvious_negative):
-                        return True, 1, 0.85  # Positive but with less confidence
-            
-            # Look for negated positive terms (becomes negative)
-            for negation in negation_markers:
-                for term in obvious_positive:
-                    negated_pattern = negation + r'.*\b' + term
-                    if re.search(negated_pattern, text_lower) and not any(other_pos in text_lower.replace(negation, '') for other_pos in obvious_positive):
-                        return True, 0, 0.85  # Negative but with less confidence
-            
+        # "Don't recommend" and similar phrases
+        recommendation_negations = [neg + " " + rec for neg in negation_words for rec in recommendation_context]
+        for neg_rec in recommendation_negations:
+            if neg_rec in text_lower:
+                return True, 0, 0.90  # Strong negative for "don't recommend" phrases
+        
+        # Check simple positive/negative phrases with "because" reasoning
+        reasoning_markers = ["because", "since", "as", "due to", "thanks to"]
+        for marker in reasoning_markers:
+            marker_pos = text_lower.find(marker)
+            if marker_pos != -1:
+                # Split into before and after the reasoning marker
+                before = text_lower[:marker_pos].strip()
+                after = text_lower[marker_pos:].strip()
+                
+                # Check for negation + reasoning structures
+                for neg in negation_words:
+                    if neg in before:
+                        # If there's negation before "because", likely negative
+                        # For example: "I don't like it because it broke"
+                        return True, 0, 0.82
+        
+        # Default - not a simple case
         return False, None, None
     
     def handle_negations(self, text):
@@ -457,16 +500,41 @@ class SentimentEnsemble:
                     after_text = text[marker_position:].strip()
                     
                     # Check for negative sentiment words in the after text
-                    negative_terms = ["bad", "terrible", "awful", "horrible", "worst", "hate", 
-                                      "dislike", "poor", "waste", "boring", "lazy", "uninspired",
-                                      "disappointed", "mediocre", "ugly", "problem", "issue", 
-                                      "worse", "irritating", "annoying", "frustrating"]
+                    negative_terms = [
+                        "bad", "terrible", "awful", "horrible", "worst", "hate", 
+                        "dislike", "poor", "waste", "boring", "lazy", "uninspired",
+                        "disappointed", "mediocre", "ugly", "problem", "issue", 
+                        "worse", "irritating", "annoying", "frustrating", "broken",
+                        "fails", "failed", "failure", "useless", "pointless", "regret",
+                        "overrated", "not worth"
+                    ]
                     
-                    # Count negative terms in after text (after the contrast marker)
+                    # Check for positive sentiment words in the after text
+                    positive_terms = [
+                        "good", "great", "excellent", "amazing", "awesome", "love",
+                        "wonderful", "fantastic", "terrific", "outstanding", "superb",
+                        "brilliant", "exceptional", "perfect", "delicious", "enjoyable",
+                        "worth", "recommend", "beautiful", "delightful", "impressive",
+                        "stunning", "lovely", "top-notch", "incredible", "marvelous"
+                    ]
+                    
+                    # Check for emphasis words that strengthen sentiment
+                    emphasis_terms = [
+                        "very", "really", "absolutely", "extremely", "incredibly",
+                        "definitely", "truly", "completely", "totally", "thoroughly",
+                        "quite", "certainly", "undoubtedly", "exceptionally", "especially"
+                    ]
+                    
+                    # Count terms in after text (after the contrast marker)
                     after_text_lower = after_text.lower()
                     neg_count = sum(1 for term in negative_terms if term in after_text_lower)
+                    pos_count = sum(1 for term in positive_terms if term in after_text_lower)
                     
-                    # Calculate weights based on position and negativity
+                    # Count emphasis terms to strengthen sentiment impact
+                    emphasis_count = sum(1 for term in emphasis_terms if term in after_text_lower)
+                    emphasis_factor = min(emphasis_count * 0.1, 0.3)  # Cap at 0.3 additional weight
+                    
+                    # Calculate weights based on position 
                     total_length = len(text)
                     relative_position = marker_position / total_length if total_length > 0 else 0.5
                     
@@ -481,15 +549,34 @@ class SentimentEnsemble:
                         before_weight = 0.3
                         after_weight = 0.7
                     
-                    # Adjust weights if there are negative terms after the contrast marker
-                    if neg_count > 0:
-                        # Strengthen the weight of the after text, especially with multiple negative terms
-                        neg_factor = min(neg_count * 0.15, 0.5)  # Cap at 0.5 additional weight
-                        
-                        # Rebalance weights to emphasize the negative after text
-                        total = before_weight + after_weight
-                        before_weight = max(before_weight - neg_factor, 0.1)  # Keep at least 0.1
-                        after_weight = total - before_weight
+                    # Check for direct recommendation phrases
+                    recommendation_phrases = ["don't recommend", "wouldn't recommend", "not recommend", 
+                                             "cannot recommend", "wouldn't suggest", "don't suggest"]
+                    has_negative_recommendation = any(phrase in after_text_lower for phrase in recommendation_phrases)
+                    
+                    # Apply special weight for recommendation phrases
+                    if has_negative_recommendation:
+                        before_weight = 0.1  # Minimal weight to the before part
+                        after_weight = 0.9  # Heavy weight to the negative recommendation
+                    # Adjust weights if there are sentiment terms after the contrast marker
+                    elif neg_count > 0 or pos_count > 0:
+                        # Determine which sentiment is stronger in the after text
+                        if neg_count > pos_count:
+                            # Strengthen the weight of negative after text
+                            neg_factor = min(neg_count * 0.15, 0.5) + emphasis_factor
+                            
+                            # Rebalance weights to emphasize the negative after text
+                            total = before_weight + after_weight
+                            before_weight = max(before_weight - neg_factor, 0.1)  # Keep at least 0.1
+                            after_weight = total - before_weight
+                        elif pos_count > neg_count:
+                            # Strengthen the weight of positive after text
+                            pos_factor = min(pos_count * 0.15, 0.5) + emphasis_factor
+                            
+                            # Rebalance weights to emphasize the positive after text
+                            total = before_weight + after_weight
+                            before_weight = max(before_weight - pos_factor, 0.1)  # Keep at least 0.1
+                            after_weight = total - before_weight
                     
                     # Return the parts with weights
                     return {
@@ -704,6 +791,19 @@ class SentimentEnsemble:
         try:
             original_text = text
             
+            # Check for negation contexts
+            negation_words = ["not", "isn't", "aren't", "wasn't", "weren't", "don't", 
+                             "doesn't", "didn't", "can't", "cannot", "couldn't", "won't",
+                             "wouldn't", "shouldn't", "never", "no", "nor", "none", "nothing"]
+            
+            has_negation = any(neg in ' ' + text.lower() + ' ' for neg in [' ' + neg + ' ' for neg in negation_words])
+            
+            # Check for recommendation phrases which are strong sentiment indicators
+            recommendation_phrases = ["recommend", "suggestion", "suggest", "advise", "would buy"]
+            neg_recommendation_phrases = [neg + " " + rec for neg in negation_words for rec in recommendation_phrases]
+            has_neg_recommendation = any(phrase in text.lower() for phrase in neg_recommendation_phrases)
+            has_pos_recommendation = any(phrase in text.lower() for phrase in recommendation_phrases) and not has_neg_recommendation
+            
             # Check for movie title sentence markers
             has_movie_title = "MOVIE_TITLE_SENTENCE" in text
             has_movie_marker = False
@@ -799,6 +899,18 @@ class SentimentEnsemble:
                     logger.warning(f"Error getting probability: {e}")
                     confidence = 0.7
                 
+                # Adjust confidence for recommendation phrases
+                if has_neg_recommendation and prediction == 0:
+                    # Boost confidence for negative recommendation that was correctly predicted
+                    confidence = min(confidence + 0.15, 0.95)
+                elif has_neg_recommendation and prediction == 1:
+                    # Model predicted positive but we have negative recommendation - override
+                    prediction = 0
+                    confidence = 0.85
+                elif has_pos_recommendation and prediction == 1:
+                    # Boost confidence for positive recommendation that was correctly predicted
+                    confidence = min(confidence + 0.1, 0.92)
+                
                 # For movie title containing sentences, adjust confidence
                 if has_movie_title or has_movie_marker:
                     # Movie titles themselves should not strongly influence sentiment
@@ -829,7 +941,11 @@ class SentimentEnsemble:
                                          not word['word'] == 'movie_title')]
                 
                 # Adjust neutral classification (confidence between 0.4 and 0.6)
-                if 0.4 <= confidence <= 0.6:
+                # Make the neutral range smaller for sentences with negation or strong terms
+                neutral_threshold_low = 0.42 if has_negation else 0.4
+                neutral_threshold_high = 0.58 if has_negation else 0.6
+                
+                if neutral_threshold_low <= confidence <= neutral_threshold_high:
                     logger.info(f"Neutral sentiment detected with confidence {confidence:.2f}")
                     # Return neutral prediction with special format
                     return {
