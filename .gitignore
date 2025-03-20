@@ -8,3 +8,5 @@ __pycache__/
 *.exe
 *.pkl
 *.ipynb_checkpoints
+models/
+nltk_data/
