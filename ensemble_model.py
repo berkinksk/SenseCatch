@@ -518,6 +518,13 @@ class SentimentEnsemble:
                         "stunning", "lovely", "top-notch", "incredible", "marvelous"
                     ]
                     
+                    # Add stronger positive terms with higher sentiment impact
+                    strong_positive_terms = [
+                        "delicious", "perfect", "outstanding", "exceptional", "brilliant",
+                        "phenomenal", "spectacular", "extraordinary", "magnificent",
+                        "top-notch", "superb", "excellent", "stellar", "wonderful"
+                    ]
+                    
                     # Check for emphasis words that strengthen sentiment
                     emphasis_terms = [
                         "very", "really", "absolutely", "extremely", "incredibly",
@@ -530,9 +537,23 @@ class SentimentEnsemble:
                     neg_count = sum(1 for term in negative_terms if term in after_text_lower)
                     pos_count = sum(1 for term in positive_terms if term in after_text_lower)
                     
+                    # Count strong positive terms with extra weight
+                    strong_pos_count = sum(1 for term in strong_positive_terms if term in after_text_lower)
+                    pos_count += strong_pos_count * 2  # Strong positive terms count double
+                    
+                    # Look for combinations of emphasis + positive terms for even stronger impact
+                    emphasis_pos_combinations = 0
+                    for emphasis in emphasis_terms:
+                        for pos_term in positive_terms:
+                            if f"{emphasis} {pos_term}" in after_text_lower:
+                                emphasis_pos_combinations += 1
+                    
+                    # Add extra weight for emphasis + positive combinations (like "absolutely delicious")
+                    pos_count += emphasis_pos_combinations * 3
+                    
                     # Count emphasis terms to strengthen sentiment impact
                     emphasis_count = sum(1 for term in emphasis_terms if term in after_text_lower)
-                    emphasis_factor = min(emphasis_count * 0.1, 0.3)  # Cap at 0.3 additional weight
+                    emphasis_factor = min(emphasis_count * 0.15, 0.4)  # Increased from 0.3 to 0.4 max
                     
                     # Calculate weights based on position 
                     total_length = len(text)
@@ -563,20 +584,26 @@ class SentimentEnsemble:
                         # Determine which sentiment is stronger in the after text
                         if neg_count > pos_count:
                             # Strengthen the weight of negative after text
-                            neg_factor = min(neg_count * 0.15, 0.5) + emphasis_factor
+                            neg_factor = min(neg_count * 0.15, 0.6) + emphasis_factor
                             
                             # Rebalance weights to emphasize the negative after text
                             total = before_weight + after_weight
                             before_weight = max(before_weight - neg_factor, 0.1)  # Keep at least 0.1
                             after_weight = total - before_weight
+                            
+                            # Log the adjustment
+                            logger.info(f"Adjusted weights for negative after-text: before={before_weight:.2f}, after={after_weight:.2f}")
                         elif pos_count > neg_count:
-                            # Strengthen the weight of positive after text
-                            pos_factor = min(pos_count * 0.15, 0.5) + emphasis_factor
+                            # Strengthen the weight of positive after text - increased factor
+                            pos_factor = min(pos_count * 0.2, 0.7) + emphasis_factor
                             
                             # Rebalance weights to emphasize the positive after text
                             total = before_weight + after_weight
-                            before_weight = max(before_weight - pos_factor, 0.1)  # Keep at least 0.1
+                            before_weight = max(before_weight - pos_factor, 0.05)  # Reduced minimum to 0.05
                             after_weight = total - before_weight
+                            
+                            # Log the adjustment
+                            logger.info(f"Adjusted weights for positive after-text: before={before_weight:.2f}, after={after_weight:.2f}")
                     
                     # Return the parts with weights
                     return {
@@ -754,15 +781,53 @@ class SentimentEnsemble:
                 
                 # Combine scores
                 combined_score = before_score + after_score
+                
+                # Log the scores for debugging
+                logger.info(f"Before score: {before_score:.3f}, After score: {after_score:.3f}, Combined: {combined_score:.3f}")
+                
+                # Check for emphasis words and strong sentiment words in after text
+                if "after" in contrast_info and isinstance(contrast_info["after"], str):
+                    after_text_lower = contrast_info["after"].lower()
+                    
+                    # List of emphasis-positive combinations that strongly indicate positive sentiment
+                    strong_positive_phrases = [
+                        "absolutely delicious", "really worth", "definitely worth", 
+                        "truly amazing", "really good", "very good", "extremely good",
+                        "incredibly good", "absolutely amazing", "definitely recommend",
+                        "truly wonderful", "absolutely worth", "really enjoyable"
+                    ]
+                    
+                    # Check if any strong positive phrases exist in the after text
+                    strong_positive_matches = [phrase for phrase in strong_positive_phrases if phrase in after_text_lower]
+                    
+                    if strong_positive_matches:
+                        # Log matches for debugging
+                        logger.info(f"Found strong positive phrases in after-text: {strong_positive_matches}")
+                        
+                        # Adjust the combined score if the after weight is significant (>0.6)
+                        if after_weight > 0.6 and after_score > 0:
+                            boost_factor = min(len(strong_positive_matches) * 0.2, 0.6)
+                            old_combined = combined_score
+                            combined_score = combined_score + boost_factor
+                            logger.info(f"Boosting positive score from {old_combined:.3f} to {combined_score:.3f}")
+                
                 final_prediction = 1 if combined_score > 0 else 0
                 
                 # For near-zero combined scores (close to neutral), reduce confidence
-                if -0.2 < combined_score < 0.2:
-                    # Map to range 0.4-0.6 for neutral sentiment
-                    confidence = 0.5 + (combined_score * 0.5)  # Maps -0.2 to 0.4, 0.2 to 0.6
+                # Narrowed the neutral range from -0.2/0.2 to -0.15/0.15
+                if -0.15 < combined_score < 0.15:
+                    # Map to range 0.4-0.6 for neutral sentiment - narrower range
+                    confidence = 0.5 + (combined_score * 0.67)  # Maps -0.15 to 0.4, 0.15 to 0.6
+                    logger.info(f"Neutral sentiment detected with confidence {confidence:.2f}")
                 else:
                     # Scale confidence based on combined score - stronger signal = higher confidence
-                    confidence = min(0.5 + abs(combined_score) / 2, 0.95)
+                    # Adjusted to give higher confidence values
+                    confidence = min(0.5 + abs(combined_score) / 1.7, 0.95)
+                    
+                    # For strong signals (combined_score > 0.4 or < -0.4), boost confidence further
+                    if abs(combined_score) > 0.4:
+                        confidence = min(confidence + 0.05, 0.95)
+                        logger.info(f"Strong sentiment detected ({final_prediction}) with boosted confidence {confidence:.2f}")
                 
                 # Get influential words (prioritize words after the contrast marker)
                 influential_words = after_prediction.get("influential_words", [])
@@ -902,14 +967,35 @@ class SentimentEnsemble:
                 # Adjust confidence for recommendation phrases
                 if has_neg_recommendation and prediction == 0:
                     # Boost confidence for negative recommendation that was correctly predicted
-                    confidence = min(confidence + 0.15, 0.95)
+                    confidence = min(confidence + 0.2, 0.95)  # Increased from 0.15 to 0.2
+                    logger.info("Negative recommendation detected - boosting negative confidence")
                 elif has_neg_recommendation and prediction == 1:
                     # Model predicted positive but we have negative recommendation - override
                     prediction = 0
-                    confidence = 0.85
+                    confidence = 0.9  # Increased from 0.85 to 0.9
+                    logger.info("Negative recommendation overriding positive prediction")
                 elif has_pos_recommendation and prediction == 1:
                     # Boost confidence for positive recommendation that was correctly predicted
-                    confidence = min(confidence + 0.1, 0.92)
+                    confidence = min(confidence + 0.15, 0.95)  # Increased from 0.1 to 0.15
+                    logger.info("Positive recommendation detected - boosting positive confidence")
+                
+                # Check for specific words that indicate strong sentiment
+                strong_neg_words = ["terrible", "awful", "horrible", "worst", "hate", "disgusting", "appalling"]
+                strong_pos_words = ["amazing", "excellent", "outstanding", "perfect", "delicious", "incredible", "fantastic"]
+                
+                # Count strong sentiment words
+                strong_neg_count = sum(1 for word in strong_neg_words if word in original_text.lower().split())
+                strong_pos_count = sum(1 for word in strong_pos_words if word in original_text.lower().split())
+                
+                # Boost confidence for strong sentiment words matching prediction
+                if strong_neg_count > 0 and prediction == 0:
+                    boost = min(strong_neg_count * 0.05, 0.2)
+                    confidence = min(confidence + boost, 0.95)
+                    logger.info(f"Found {strong_neg_count} strong negative words - boosting confidence by {boost:.2f}")
+                elif strong_pos_count > 0 and prediction == 1:
+                    boost = min(strong_pos_count * 0.05, 0.2)
+                    confidence = min(confidence + boost, 0.95)
+                    logger.info(f"Found {strong_pos_count} strong positive words - boosting confidence by {boost:.2f}")
                 
                 # For movie title containing sentences, adjust confidence
                 if has_movie_title or has_movie_marker:
@@ -942,8 +1028,14 @@ class SentimentEnsemble:
                 
                 # Adjust neutral classification (confidence between 0.4 and 0.6)
                 # Make the neutral range smaller for sentences with negation or strong terms
-                neutral_threshold_low = 0.42 if has_negation else 0.4
-                neutral_threshold_high = 0.58 if has_negation else 0.6
+                neutral_threshold_low = 0.44 if has_negation else 0.42  # Narrowed from 0.42/0.40
+                neutral_threshold_high = 0.56 if has_negation else 0.58  # Narrowed from 0.58/0.60
+                
+                # Further narrow neutral range for sentences with strong sentiment words
+                if strong_neg_count > 0 or strong_pos_count > 0:
+                    neutral_threshold_low = 0.46
+                    neutral_threshold_high = 0.54
+                    logger.info(f"Strong sentiment words detected - narrowing neutral range to {neutral_threshold_low}-{neutral_threshold_high}")
                 
                 if neutral_threshold_low <= confidence <= neutral_threshold_high:
                     logger.info(f"Neutral sentiment detected with confidence {confidence:.2f}")
