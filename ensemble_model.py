@@ -353,49 +353,67 @@ class SentimentEnsemble:
             return text
     
     def _handle_simple_cases(self, text):
-        """Handle obvious cases that don't need full model prediction"""
+        """Handle obvious cases that don't require model prediction"""
+        # Convert to lowercase
         text_lower = text.lower()
         
-        # Very positive phrases
-        very_positive = [
-            "love it", "amazing", "excellent", "fantastic", "awesome", 
-            "best ever", "perfect", "brilliant", "outstanding", "superb",
-            "wonderful", "incredible", "terrific", "exceptional", "magnificent",
-            "absolutely love", "highly recommend", "definitely recommend",
-            "10/10", "five stars", "5 stars", "5/5", "loved every"
-        ]
+        # Define negation words
+        negation_words = ['not', 'no', 'never', 'don\'t', 'doesn\'t', 'didn\'t', 'haven\'t', 
+                          'hasn\'t', 'hadn\'t', 'can\'t', 'cannot', 'couldn\'t', 'shouldn\'t', 
+                          'wouldn\'t', 'won\'t', 'isn\'t', 'aren\'t', 'ain\'t', 'wasn\'t', 
+                          'weren\'t', 'nor', 'neither']
         
-        # Very negative phrases
-        very_negative = [
-            "hate it", "terrible", "awful", "horrible", "worst ever", 
-            "waste of", "terrible", "rubbish", "garbage", "junk", 
-            "disappointed", "disappointing", "absolutely hate", "cannot stand",
-            "would not recommend", "don't recommend", "0/10", "zero stars",
-            "0 stars", "0/5", "avoid this", "stay away", "never again",
-            "wouldn't recommend", "cannot recommend", "would never recommend",
-            "broke immediately", "broke within", "failed immediately", "doesn't work"
-        ]
+        # Define very positive and very negative phrases
+        very_positive = ['excellent', 'amazing', 'awesome', 'outstanding', 'perfect', 'fantastic', 
+                         'brilliant', 'great', 'terrific', 'phenomenal', 'superb', 'wonderful']
         
-        # Check for negation modifiers
-        negation_words = ["not", "isn't", "aren't", "wasn't", "weren't", "don't", 
-                         "doesn't", "didn't", "can't", "cannot", "couldn't", "won't",
-                         "wouldn't", "shouldn't", "never", "no", "nor", "none", "nothing"]
+        very_negative = ['terrible', 'awful', 'horrible', 'dreadful', 'abysmal', 'atrocious', 
+                         'abhorrent', 'disgusting', 'appalling', 'horrific', 'catastrophic']
         
         # Check for recommendation context
-        recommendation_context = ["recommend", "suggestion", "advised", "advise", "suggest"]
+        recommendation_context = ['recommend', 'recommendation', 'advise', 'endorse', 'suggest']
         
-        # Direct positive match (check that it's not negated)
-        is_negated = any(neg + " " in " " + text_lower + " " for neg in negation_words)
+        # Define complex negation cases
+        # NEW: Explicit negated phrase mapping with direct sentiment values
+        explicit_negated_phrases = {
+            # Strong negative expressions
+            "don't recommend": (0, 0.92),  # Negative with high confidence
+            "doesn't recommend": (0, 0.92),
+            "wouldn't recommend": (0, 0.93),
+            "cannot recommend": (0, 0.92),
+            "can't recommend": (0, 0.92),
+            "never recommend": (0, 0.94),
+            "do not recommend": (0, 0.93),
+            "not worth": (0, 0.85),
+            "not recommended": (0, 0.91),
+            
+            # Strong positive expressions
+            "highly recommend": (1, 0.92),
+            "strongly recommend": (1, 0.93),
+            "definitely recommend": (1, 0.94),
+            "absolutely recommend": (1, 0.94),
+            "would recommend": (1, 0.9),
+            
+            # Double negative expressions (positive)
+            "not disappointed": (1, 0.8),
+            "not bad at all": (1, 0.82),
+            "no complaints": (1, 0.85),
+            "never been disappointed": (1, 0.87),
+            
+            # Strong sentiment with reasoning
+            "recommend because": (1, 0.91),
+            "don't recommend because": (0, 0.92),
+            "broke within": (0, 0.88),  # Strong indication of negative product experience
+            "failed within": (0, 0.89)
+        }
         
-        # Strong negation phrases take precedence if found
-        for neg_phrase in very_negative:
-            if neg_phrase in text_lower:
-                # If it's a recommendation phrase, it's already negative
-                if any(rec in neg_phrase for rec in recommendation_context):
-                    return True, 0, 0.92
-                return True, 0, 0.90
+        # NEW: Check for explicit negated phrases first
+        for phrase, (sentiment, confidence) in explicit_negated_phrases.items():
+            if phrase in text_lower:
+                logger.info(f"Explicit phrase match: '{phrase}' → {sentiment} ({confidence:.2f})")
+                return True, sentiment, confidence
         
-        # Positive phrases have more complex rules with negation
+        # Check for very positive phrases
         for pos_phrase in very_positive:
             if pos_phrase in text_lower:
                 # Check if the positive phrase is negated
@@ -416,6 +434,7 @@ class SentimentEnsemble:
         recommendation_negations = [neg + " " + rec for neg in negation_words for rec in recommendation_context]
         for neg_rec in recommendation_negations:
             if neg_rec in text_lower:
+                logger.info(f"Recommendation negation detected: '{neg_rec}'")
                 return True, 0, 0.90  # Strong negative for "don't recommend" phrases
         
         # Check simple positive/negative phrases with "because" reasoning
@@ -426,6 +445,23 @@ class SentimentEnsemble:
                 # Split into before and after the reasoning marker
                 before = text_lower[:marker_pos].strip()
                 after = text_lower[marker_pos:].strip()
+                
+                # Check for negative product experiences after "because"
+                product_failure_terms = ["broke", "broken", "failed", "stopped working", "defective",
+                                        "malfunctioned", "stopped", "died", "unusable", "useless"]
+                
+                # NEW: Enhanced reasoning logic
+                if any(term in after for term in product_failure_terms):
+                    logger.info(f"Product failure reasoning detected after '{marker}'")
+                    # Check what comes before the reasoning
+                    if any(neg in before for neg in negation_words) and any(rec in before for rec in recommendation_context):
+                        # "don't recommend because it broke" - strong negative
+                        return True, 0, 0.93
+                    elif any(rec in before for rec in recommendation_context):
+                        # Recommendation followed by negative reason is very unusual and likely sarcastic
+                        # e.g. "I recommend it because it broke immediately" - likely negative
+                        logger.info("Possible sarcasm detected: positive recommendation with negative reason")
+                        return True, 0, 0.75
                 
                 # Check for negation + reasoning structures
                 for neg in negation_words:
@@ -466,12 +502,40 @@ class SentimentEnsemble:
                 "can't complain": "satisfied"
             }
             
+            # NEW: Critical negated compound phrases with sentiment overrides
+            compound_negated_phrases = {
+                # Recommendation negations - high priority overrides
+                "don't recommend": {"sentiment": "negative", "confidence": 0.92},
+                "doesn't recommend": {"sentiment": "negative", "confidence": 0.92},
+                "wouldn't recommend": {"sentiment": "negative", "confidence": 0.93},
+                "do not recommend": {"sentiment": "negative", "confidence": 0.92},
+                "can't recommend": {"sentiment": "negative", "confidence": 0.91},
+                "cannot recommend": {"sentiment": "negative", "confidence": 0.91},
+                
+                # Double negation cases
+                "wasn't great, nor": {"sentiment": "negative", "confidence": 0.89},
+                "wasn't good, nor": {"sentiment": "negative", "confidence": 0.89},
+                "isn't great, nor": {"sentiment": "negative", "confidence": 0.89},
+                "weren't good, nor": {"sentiment": "negative", "confidence": 0.89}
+            }
+            
             # Track whether a special phrase was detected for sentiment override
             special_phrase_detected = False
             detected_phrase = None
             
             # Storage for special negation phrases that should force sentiment
             forced_sentiment = None  # Will store "positive" or "negative" when a forcing phrase is found
+            forced_confidence = None
+            
+            # NEW: Check for compound negated phrases with highest priority
+            for phrase, override in compound_negated_phrases.items():
+                if phrase in text.lower():
+                    logger.info(f"Compound negation phrase detected: '{phrase}' → {override['sentiment']}")
+                    special_phrase_detected = True
+                    detected_phrase = phrase
+                    forced_sentiment = override["sentiment"]
+                    forced_confidence = override["confidence"]
+                    break
             
             # Check for special phrases that should override sentiment
             special_positive_override_phrases = [
@@ -480,27 +544,42 @@ class SentimentEnsemble:
                 "definitely not bad", "certainly not bad"
             ]
             
-            # More explicit checks for special phrases
-            for phrase in special_positive_override_phrases:
-                if phrase in text.lower():
-                    logger.info(f"Special STRONG positive override phrase detected: '{phrase}'")
-                    forced_sentiment = "positive"
-                    detected_phrase = phrase
-                    special_phrase_detected = True
-                    break
-            
-            # Check for standard special phrases
-            for phrase, replacement in positive_negation_phrases.items():
-                if phrase in text.lower():
-                    logger.info(f"Special negation phrase detected: '{phrase}' → '{replacement}'")
-                    # Only store the first detection as primary
-                    if not special_phrase_detected:
-                        special_phrase_detected = True
+            # Only check for other phrases if we haven't found a compound negated phrase
+            if not special_phrase_detected:
+                # More explicit checks for special phrases
+                for phrase in special_positive_override_phrases:
+                    if phrase in text.lower():
+                        logger.info(f"Special STRONG positive override phrase detected: '{phrase}'")
+                        forced_sentiment = "positive"
                         detected_phrase = phrase
-                        forced_sentiment = "positive"  # These are all positive sentiment overrides
-                    
-                    # Perform the text replacement
-                    text = re.sub(r'\b' + re.escape(phrase) + r'\b', replacement, text.lower(), flags=re.IGNORECASE)
+                        forced_confidence = 0.88
+                        special_phrase_detected = True
+                        break
+                
+                # Check for standard special phrases
+                if not special_phrase_detected:
+                    for phrase, replacement in positive_negation_phrases.items():
+                        if phrase in text.lower():
+                            logger.info(f"Special negation phrase detected: '{phrase}' → '{replacement}'")
+                            # Only store the first detection as primary
+                            if not special_phrase_detected:
+                                special_phrase_detected = True
+                                detected_phrase = phrase
+                                forced_sentiment = "positive"  # These are all positive sentiment overrides
+                                forced_confidence = 0.85
+                            
+                            # Perform the text replacement
+                            text = re.sub(r'\b' + re.escape(phrase) + r'\b', replacement, text.lower(), flags=re.IGNORECASE)
+            
+            # NEW: Track complex negation patterns
+            has_nor_construction = bool(re.search(r'(wasn\'t|weren\'t|isn\'t|aren\'t).+nor', text.lower()))
+            if has_nor_construction:
+                logger.info(f"Complex 'nor' construction detected: likely double negative pattern")
+                if not special_phrase_detected:
+                    special_phrase_detected = True
+                    detected_phrase = "nor construction"
+                    forced_sentiment = "negative"
+                    forced_confidence = 0.85
             
             # Enhanced tokenization with better error handling
             try:
@@ -529,6 +608,14 @@ class SentimentEnsemble:
                     current_sentence = next((j for j, boundary in enumerate(sentence_boundaries) 
                                             if boundary >= i), len(sentence_boundaries) - 1) - 1
                     
+                    # Special handling for "nor" - extends scope further
+                    if word.lower() == 'nor':
+                        logger.info(f"'nor' detected at position {i} - extending negation scope")
+                        # For "nor", extend scope to end of sentence with high weight
+                        sentence_end = sentence_boundaries[current_sentence + 1]
+                        negation_scope.extend(range(i + 1, sentence_end))
+                        continue
+                    
                     # Mark words after the negation until the next boundary or up to 5 words
                     sentence_end = sentence_boundaries[current_sentence + 1]
                     scope_end = min(i + 6, sentence_end)
@@ -547,6 +634,30 @@ class SentimentEnsemble:
                     if scope_end > i + 1:
                         scope_words = ' '.join(words[i+1:scope_end])
                         logger.info(f"Negation trigger: '{word}' affecting: '{scope_words}'")
+            
+            # NEW: Special handling for recommendation terms in negation scope
+            recommendation_terms = ['recommend', 'recommended', 'recommendation', 'recommending', 'recommends']
+            for i, word in enumerate(words):
+                if word.lower() in recommendation_terms and i-1 >= 0 and i-1 < len(words):
+                    prev_word = words[i-1].lower()
+                    prev_prev_word = words[i-2].lower() if i-2 >= 0 else ""
+                    
+                    # Check for direct negation before recommendation
+                    if prev_word in negation_words or any(neg in prev_word for neg in ["n't"]):
+                        logger.info(f"Direct recommendation negation: '{prev_word} {word}'")
+                        # Mark this as a special pattern with high priority
+                        special_phrase_detected = True
+                        detected_phrase = f"{prev_word} {word}"
+                        forced_sentiment = "negative"
+                        forced_confidence = 0.92
+                    
+                    # Check for "do not recommend" pattern
+                    elif prev_word == "not" and prev_prev_word in ["do", "does", "would", "will"]:
+                        logger.info(f"Extended recommendation negation: '{prev_prev_word} {prev_word} {word}'")
+                        special_phrase_detected = True
+                        detected_phrase = f"{prev_prev_word} {prev_word} {word}"
+                        forced_sentiment = "negative"
+                        forced_confidence = 0.93
             
             # Third pass: build the result with proper negation marking
             in_special_phrase = False
@@ -572,7 +683,9 @@ class SentimentEnsemble:
                 return ' '.join(item['modified'] for item in result), result, {
                     'special_phrase_detected': special_phrase_detected,
                     'detected_phrase': detected_phrase,
-                    'forced_sentiment': forced_sentiment
+                    'forced_sentiment': forced_sentiment,
+                    'forced_confidence': forced_confidence,
+                    'has_nor_construction': has_nor_construction
                 }
             else:
                 # Backwards compatibility
@@ -868,6 +981,7 @@ class SentimentEnsemble:
             if special_phrase_info.get('special_phrase_detected', False):
                 forced_sentiment = special_phrase_info.get('forced_sentiment')
                 detected_phrase = special_phrase_info.get('detected_phrase', 'unknown')
+                forced_confidence = special_phrase_info.get('forced_confidence')
                 
                 logger.info(f"[{model_name}] Special phrase detected: '{detected_phrase}' with forced sentiment: {forced_sentiment}")
                 
@@ -879,8 +993,12 @@ class SentimentEnsemble:
                     result = self._predict_simple_text(cleaned_text, model, vectorizer, model_name, negation_markers, params)
                     influential_words = result.get("influential_words", [])
                     
-                    # Set high confidence positive prediction with model-specific confidence
-                    return 1, params['special_override_confidence'] + unique_random, influential_words
+                    # Use the provided forced confidence if available, otherwise use model parameters
+                    confidence = forced_confidence if forced_confidence else params['special_override_confidence']
+                    # Add small model-specific random factor to make each model's output unique
+                    confidence = min(confidence + unique_random, 0.95)
+                    
+                    return 1, confidence, influential_words
                 elif forced_sentiment == "negative":
                     # If this phrase forces negative sentiment, override prediction
                     logger.info(f"[{model_name}] Forcing NEGATIVE prediction due to special phrase: '{detected_phrase}'")
@@ -889,8 +1007,37 @@ class SentimentEnsemble:
                     result = self._predict_simple_text(cleaned_text, model, vectorizer, model_name, negation_markers, params)
                     influential_words = result.get("influential_words", [])
                     
-                    # Set high confidence negative prediction with model-specific confidence
-                    return 0, params['special_override_confidence'] + unique_random, influential_words
+                    # Use the provided forced confidence if available, otherwise use model parameters
+                    confidence = forced_confidence if forced_confidence else params['special_override_confidence']
+                    # Add small model-specific random factor to make each model's output unique
+                    confidence = min(confidence + unique_random, 0.95)
+                    
+                    return 0, confidence, influential_words
+            
+            # Check if this contains a "nor" construction which requires special handling
+            if special_phrase_info.get('has_nor_construction', False):
+                logger.info(f"[{model_name}] Text contains 'nor' construction requiring special handling")
+                
+                # Make standard prediction first
+                result = self._predict_simple_text(cleaned_text, model, vectorizer, model_name, negation_markers, params)
+                prediction = result.get("prediction", 0)
+                confidence = result.get("confidence", 0.5)
+                influential_words = result.get("influential_words", [])
+                
+                # For sentences with "wasn't X, nor was Y" pattern, we need to emphasize negative sentiment
+                if "nor" in cleaned_text.lower():
+                    # Most "nor" constructions are strong negative
+                    # If already negative, boost confidence
+                    if prediction == 0:
+                        confidence = min(confidence + 0.15, 0.95)
+                        logger.info(f"[{model_name}] Boosting confidence for negative 'nor' construction: {confidence}")
+                    else:
+                        # If positive, likely an error - flip to negative
+                        logger.info(f"[{model_name}] Flipping prediction from positive to negative for 'nor' construction")
+                        prediction = 0
+                        confidence = 0.75 + (unique_random / 5)
+                    
+                    return prediction, confidence, influential_words
             
             # Process contrast markers with model-specific weights
             contrast_info = self.process_contrast_markers(cleaned_text)
