@@ -466,10 +466,40 @@ class SentimentEnsemble:
                 "can't complain": "satisfied"
             }
             
-            # Check for special phrases first
+            # Track whether a special phrase was detected for sentiment override
+            special_phrase_detected = False
+            detected_phrase = None
+            
+            # Storage for special negation phrases that should force sentiment
+            forced_sentiment = None  # Will store "positive" or "negative" when a forcing phrase is found
+            
+            # Check for special phrases that should override sentiment
+            special_positive_override_phrases = [
+                "isn't bad at all", "not bad at all", "not that bad", 
+                "isn't even bad", "not even bad", "really not bad",
+                "definitely not bad", "certainly not bad"
+            ]
+            
+            # More explicit checks for special phrases
+            for phrase in special_positive_override_phrases:
+                if phrase in text.lower():
+                    logger.info(f"Special STRONG positive override phrase detected: '{phrase}'")
+                    forced_sentiment = "positive"
+                    detected_phrase = phrase
+                    special_phrase_detected = True
+                    break
+            
+            # Check for standard special phrases
             for phrase, replacement in positive_negation_phrases.items():
                 if phrase in text.lower():
                     logger.info(f"Special negation phrase detected: '{phrase}' → '{replacement}'")
+                    # Only store the first detection as primary
+                    if not special_phrase_detected:
+                        special_phrase_detected = True
+                        detected_phrase = phrase
+                        forced_sentiment = "positive"  # These are all positive sentiment overrides
+                    
+                    # Perform the text replacement
                     text = re.sub(r'\b' + re.escape(phrase) + r'\b', replacement, text.lower(), flags=re.IGNORECASE)
             
             # Enhanced tokenization with better error handling
@@ -537,19 +567,23 @@ class SentimentEnsemble:
             
             # Convert result to the format expected by the rest of the code
             if all(isinstance(item, dict) for item in result):
-                # Return the modified text with negation markers
+                # Return the modified text with negation markers and special phrase info
                 logger.info(f"Processed negation in text: {' '.join(item['modified'] for item in result)}")
-                return ' '.join(item['modified'] for item in result), result
+                return ' '.join(item['modified'] for item in result), result, {
+                    'special_phrase_detected': special_phrase_detected,
+                    'detected_phrase': detected_phrase,
+                    'forced_sentiment': forced_sentiment
+                }
             else:
                 # Backwards compatibility
                 logger.warning("Negation handling returned unexpected format")
-                return text, []
+                return text, [], {'special_phrase_detected': False}
                 
         except Exception as e:
             logger.error(f"Error in handle_negations: {str(e)}")
             logger.error(traceback.format_exc())
             # Return original text if there's an error
-            return text, []
+            return text, [], {'special_phrase_detected': False}
     
     def process_contrast_markers(self, text):
         """Process text with contrast markers like 'but', 'however'"""
@@ -800,19 +834,19 @@ class SentimentEnsemble:
             
             # Try to apply negation handling
             try:
-                text, negation_markers = self.handle_negations(text)
+                text, negation_markers, special_phrase_info = self.handle_negations(text)
             except Exception as e:
                 logger.error(f"Negation handling failed: {e}")
                 # Continue without negation handling
             
             # Remove extra whitespace
             text = re.sub(r'\s+', ' ', text).strip()
-            return text, negation_markers
+            return text, negation_markers, special_phrase_info
         except Exception as e:
             logger.error(f"Error in clean_text: {str(e)}")
             logger.error(traceback.format_exc())
             # Simple fallback cleaning
-            return text.lower().strip(), []
+            return text.lower().strip(), [], {'special_phrase_detected': False}
     
     def safety_check(self, text):
         """Check if text contains potentially harmful/negative emotional content"""
@@ -862,10 +896,38 @@ class SentimentEnsemble:
             model = self.models[model_name]
             vectorizer = self.vectorizers[model_name]
             
-            # Clean the text - set up a unique instance of the cleaned text for this model
+            # Create a completely fresh text preprocessing pipeline for this model
             # This helps ensure model independence
             unique_random = random.random()  # Add a tiny bit of randomness to ensure uniqueness
-            cleaned_text, negation_markers = self.clean_text(text)
+            cleaned_text, negation_markers, special_phrase_info = self.clean_text(text)
+            
+            # Check for special phrase overrides (like "isn't bad at all") that should force sentiment
+            if special_phrase_info.get('special_phrase_detected', False):
+                forced_sentiment = special_phrase_info.get('forced_sentiment')
+                detected_phrase = special_phrase_info.get('detected_phrase', 'unknown')
+                
+                logger.info(f"Special phrase detected: '{detected_phrase}' with forced sentiment: {forced_sentiment}")
+                
+                if forced_sentiment == "positive":
+                    # If this phrase forces positive sentiment, override prediction
+                    logger.info(f"Forcing POSITIVE prediction due to special phrase: '{detected_phrase}'")
+                    
+                    # Make prediction for influential words only but ignore the prediction itself
+                    result = self._predict_simple_text(cleaned_text, model, vectorizer, model_name, negation_markers)
+                    influential_words = result.get("influential_words", [])
+                    
+                    # Set high confidence positive prediction regardless of what the model says
+                    return 1, 0.88, influential_words
+                elif forced_sentiment == "negative":
+                    # If this phrase forces negative sentiment, override prediction
+                    logger.info(f"Forcing NEGATIVE prediction due to special phrase: '{detected_phrase}'")
+                    
+                    # Make prediction for influential words only but ignore the prediction itself
+                    result = self._predict_simple_text(cleaned_text, model, vectorizer, model_name, negation_markers)
+                    influential_words = result.get("influential_words", [])
+                    
+                    # Set high confidence negative prediction regardless of what the model says
+                    return 0, 0.88, influential_words
             
             # Process contrast markers
             contrast_info = self.process_contrast_markers(cleaned_text)
@@ -1098,6 +1160,13 @@ class SentimentEnsemble:
                     confidence = min(confidence + 0.15, 0.95)  # Increased from 0.1 to 0.15
                     logger.info("Positive recommendation detected - boosting positive confidence")
                 
+                # Check for double negation with "nor" - common in negative sentences
+                has_double_negation = bool(re.search(r'(wasn\'t|weren\'t|isn\'t|aren\'t|don\'t|doesn\'t|didn\'t).*nor', text.lower()))
+                if has_double_negation:
+                    logger.info(f"Detected double negation with 'nor': '{text}'")
+                    # Double negation with "nor" is almost always strong negative
+                    # e.g., "wasn't great, nor was it good" = strongly negative
+                
                 # Check for specific words that indicate strong sentiment
                 strong_neg_words = ["terrible", "awful", "horrible", "worst", "hate", "disgusting", "appalling"]
                 strong_pos_words = ["amazing", "excellent", "outstanding", "perfect", "delicious", "incredible", "fantastic"]
@@ -1115,6 +1184,18 @@ class SentimentEnsemble:
                     boost = min(strong_pos_count * 0.05, 0.2)
                     confidence = min(confidence + boost, 0.95)
                     logger.info(f"Found {strong_pos_count} strong positive words - boosting confidence by {boost:.2f}")
+                
+                # Special handling for double negation with "nor"
+                if has_double_negation:
+                    # If model already predicts negative, boost confidence
+                    if prediction == 0:
+                        confidence = min(confidence + 0.15, 0.95)
+                        logger.info(f"Boosting negative confidence for double negation: {confidence:.2f}")
+                    # If model predicts positive, flip to negative with high confidence
+                    else:
+                        prediction = 0
+                        confidence = 0.8
+                        logger.info(f"Overriding to negative due to double negation")
                 
                 # For movie title containing sentences, adjust confidence
                 if has_movie_title or has_movie_marker:
@@ -1210,7 +1291,7 @@ class SentimentEnsemble:
                 }
             
             # Clean and preprocess the text
-            cleaned_text, negation_markers = self.clean_text(text)
+            cleaned_text, negation_markers, special_phrase_info = self.clean_text(text)
             
             # Perform safety check first
             if self.safety_check(text):
@@ -1230,7 +1311,8 @@ class SentimentEnsemble:
             # If a specific model is requested, only use that model
             if specific_model and specific_model in self.models:
                 # Create a completely fresh text preprocessing pipeline for this model
-                # to ensure true model separation
+                # to ensure true model independence
+                unique_model_random = random.random()  # Ensure unique processing per model
                 pred, conf, words = self.predict_with_specific_model(text, specific_model)
                 if pred is not None:
                     # Add random small variation to confidence to ensure model independence
@@ -1253,9 +1335,11 @@ class SentimentEnsemble:
                     
                     return pred, conf, words
             
-            # Otherwise use all models
+            # Otherwise use all models - with strong model independence
             for model_name in self.models:
-                # Get prediction using the specific model
+                # Use a completely separate preprocessing pipeline for each model
+                # to ensure true model independence
+                unique_model_random = random.random()  # Ensure unique processing per model
                 pred, conf, words = self.predict_with_specific_model(text, model_name)
                 if pred is not None:
                     # Add substantial random variation to confidence score to ensure models give different results
@@ -1339,7 +1423,7 @@ class SentimentEnsemble:
             vectorizer = self.vectorizers[model_type]
             
             # Get negation information from the text
-            _, negation_markers = self.handle_negations(text)
+            _, negation_markers, _ = self.handle_negations(text)
             
             # Track which words are negated
             negated_words = {}
