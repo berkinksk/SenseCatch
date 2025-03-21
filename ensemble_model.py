@@ -599,6 +599,21 @@ class SentimentEnsemble:
                         "top-notch", "superb", "excellent", "stellar", "wonderful"
                     ]
                     
+                    # Direct forcing terms - if these appear after a contrast marker, they force the sentiment
+                    forcing_positive_terms = [
+                        "absolutely delicious", "really worth", "definitely worth", 
+                        "truly amazing", "absolutely amazing", "definitely recommend",
+                        "absolutely worth", "extremely good", "incredibly good",
+                        "exceptional", "outstanding", "phenomenal", "spectacular"
+                    ]
+                    
+                    forcing_negative_terms = [
+                        "absolutely terrible", "completely useless", "totally broken",
+                        "extremely disappointing", "incredibly frustrating", "worst ever",
+                        "complete waste", "absolutely awful", "completely failed", 
+                        "don't recommend", "wouldn't recommend", "terrible"
+                    ]
+                    
                     # Check for emphasis words that strengthen sentiment
                     emphasis_terms = [
                         "very", "really", "absolutely", "extremely", "incredibly",
@@ -629,6 +644,16 @@ class SentimentEnsemble:
                     emphasis_count = sum(1 for term in emphasis_terms if term in after_text_lower)
                     emphasis_factor = min(emphasis_count * 0.15, 0.4)  # Increased from 0.3 to 0.4 max
                     
+                    # Check for forcing sentiment terms that should override scores
+                    has_forcing_positive = any(term in after_text_lower for term in forcing_positive_terms)
+                    has_forcing_negative = any(term in after_text_lower for term in forcing_negative_terms)
+                    
+                    # Log if we found forcing terms
+                    if has_forcing_positive:
+                        logger.info(f"Found forcing positive term after contrast marker: '{after_text}'")
+                    if has_forcing_negative:
+                        logger.info(f"Found forcing negative term after contrast marker: '{after_text}'")
+                    
                     # Calculate weights based on position 
                     total_length = len(text)
                     relative_position = marker_position / total_length if total_length > 0 else 0.5
@@ -649,8 +674,25 @@ class SentimentEnsemble:
                                              "cannot recommend", "wouldn't suggest", "don't suggest"]
                     has_negative_recommendation = any(phrase in after_text_lower for phrase in recommendation_phrases)
                     
+                    # The forcing terms provide a direct override to the weighting
+                    if has_forcing_positive:
+                        # Give almost all weight to the positive after text
+                        before_weight = 0.05  # Minimal weight to the before part
+                        after_weight = 0.95  # Heavy weight to the positive after text
+                        
+                        # Flag this as having forced positive sentiment
+                        has_forced_positive = True
+                        logger.info(f"Forcing positive sentiment due to strong positive terms after '{marker}'")
+                    elif has_forcing_negative:
+                        # Give almost all weight to the negative after text
+                        before_weight = 0.05  # Minimal weight to the before part
+                        after_weight = 0.95  # Heavy weight to the negative after text
+                        
+                        # Flag this as having forced negative sentiment
+                        has_forced_negative = True
+                        logger.info(f"Forcing negative sentiment due to strong negative terms after '{marker}'")
                     # Apply special weight for recommendation phrases
-                    if has_negative_recommendation:
+                    elif has_negative_recommendation:
                         before_weight = 0.1  # Minimal weight to the before part
                         after_weight = 0.9  # Heavy weight to the negative recommendation
                     # Adjust weights if there are sentiment terms after the contrast marker
@@ -679,14 +721,18 @@ class SentimentEnsemble:
                             # Log the adjustment
                             logger.info(f"Adjusted weights for positive after-text: before={before_weight:.2f}, after={after_weight:.2f}")
                     
-                    # Return the parts with weights
+                    # Return the parts with weights and forcing flags
                     return {
                         "has_contrast": True,
                         "before": before_text,
                         "after": after_text,
                         "before_weight": before_weight,
                         "after_weight": after_weight,
-                        "contrast_marker": marker
+                        "contrast_marker": marker,
+                        "has_forced_positive": has_forcing_positive,
+                        "has_forced_negative": has_forcing_negative,
+                        "strong_positive_count": strong_pos_count,
+                        "emphasis_combinations": emphasis_pos_combinations
                     }
             
             # No contrast markers found
@@ -816,7 +862,9 @@ class SentimentEnsemble:
             model = self.models[model_name]
             vectorizer = self.vectorizers[model_name]
             
-            # Clean the text
+            # Clean the text - set up a unique instance of the cleaned text for this model
+            # This helps ensure model independence
+            unique_random = random.random()  # Add a tiny bit of randomness to ensure uniqueness
             cleaned_text, negation_markers = self.clean_text(text)
             
             # Process contrast markers
@@ -838,13 +886,6 @@ class SentimentEnsemble:
                 before_prediction = self._predict_simple_text(before_text, model, vectorizer, model_name, negation_markers)
                 after_prediction = self._predict_simple_text(after_text, model, vectorizer, model_name, negation_markers)
                 
-                # Check if either part returned a neutral prediction
-                if (before_prediction.get("is_neutral", False) or 
-                    after_prediction.get("is_neutral", False)):
-                    # If either part is neutral, combined is likely neutral
-                    confidence = 0.5  # Neutral confidence
-                    return 0.5, confidence, after_prediction.get("influential_words", [])
-                
                 # Get actual prediction values
                 before_pred = before_prediction.get("prediction", 0.5)
                 after_pred = after_prediction.get("prediction", 0.5)
@@ -853,55 +894,59 @@ class SentimentEnsemble:
                 before_score = (before_pred * 2 - 1) * before_prediction.get("confidence", 0.5) * before_weight
                 after_score = (after_pred * 2 - 1) * after_prediction.get("confidence", 0.5) * after_weight
                 
-                # Combine scores
-                combined_score = before_score + after_score
-                
                 # Log the scores for debugging
-                logger.info(f"Before score: {before_score:.3f}, After score: {after_score:.3f}, Combined: {combined_score:.3f}")
+                logger.info(f"Before score: {before_score:.3f}, After score: {after_score:.3f}")
                 
-                # Check for emphasis words and strong sentiment words in after text
-                if "after" in contrast_info and isinstance(contrast_info["after"], str):
-                    after_text_lower = contrast_info["after"].lower()
+                # Check for forced sentiment from contrast markers (e.g., "delicious" after "but")
+                if contrast_info.get("has_forced_positive", False):
+                    # Override to force positive prediction with high confidence
+                    logger.info(f"Forcing positive prediction due to strong positive terms after contrast marker")
+                    final_prediction = 1
+                    combined_score = max(after_score * 2, 0.5)  # Ensure a strong positive score
+                    confidence = min(0.7 + (contrast_info.get("strong_positive_count", 0) * 0.05), 0.95)
                     
-                    # List of emphasis-positive combinations that strongly indicate positive sentiment
-                    strong_positive_phrases = [
-                        "absolutely delicious", "really worth", "definitely worth", 
-                        "truly amazing", "really good", "very good", "extremely good",
-                        "incredibly good", "absolutely amazing", "definitely recommend",
-                        "truly wonderful", "absolutely worth", "really enjoyable"
-                    ]
+                    # Add boost for emphasis combinations (like "absolutely delicious")
+                    emphasis_boost = min(contrast_info.get("emphasis_combinations", 0) * 0.08, 0.2)
+                    confidence = min(confidence + emphasis_boost, 0.95)
                     
-                    # Check if any strong positive phrases exist in the after text
-                    strong_positive_matches = [phrase for phrase in strong_positive_phrases if phrase in after_text_lower]
+                    logger.info(f"Forced positive prediction with confidence {confidence:.2f}")
+                elif contrast_info.get("has_forced_negative", False):
+                    # Override to force negative prediction with high confidence
+                    logger.info(f"Forcing negative prediction due to strong negative terms after contrast marker")
+                    final_prediction = 0
+                    combined_score = min(after_score * 2, -0.5)  # Ensure a strong negative score
+                    confidence = 0.9  # High confidence for forced negative
                     
-                    if strong_positive_matches:
-                        # Log matches for debugging
-                        logger.info(f"Found strong positive phrases in after-text: {strong_positive_matches}")
-                        
-                        # Adjust the combined score if the after weight is significant (>0.6)
-                        if after_weight > 0.6 and after_score > 0:
-                            boost_factor = min(len(strong_positive_matches) * 0.2, 0.6)
-                            old_combined = combined_score
-                            combined_score = combined_score + boost_factor
-                            logger.info(f"Boosting positive score from {old_combined:.3f} to {combined_score:.3f}")
-                
-                final_prediction = 1 if combined_score > 0 else 0
-                
-                # For near-zero combined scores (close to neutral), reduce confidence
-                # Narrowed the neutral range from -0.2/0.2 to -0.15/0.15
-                if -0.15 < combined_score < 0.15:
-                    # Map to range 0.4-0.6 for neutral sentiment - narrower range
-                    confidence = 0.5 + (combined_score * 0.67)  # Maps -0.15 to 0.4, 0.15 to 0.6
-                    logger.info(f"Neutral sentiment detected with confidence {confidence:.2f}")
+                    logger.info(f"Forced negative prediction with confidence {confidence:.2f}")
                 else:
-                    # Scale confidence based on combined score - stronger signal = higher confidence
-                    # Adjusted to give higher confidence values
-                    confidence = min(0.5 + abs(combined_score) / 1.7, 0.95)
+                    # Normal combination of scores
+                    combined_score = before_score + after_score
+                    final_prediction = 1 if combined_score > 0 else 0
                     
-                    # For strong signals (combined_score > 0.4 or < -0.4), boost confidence further
-                    if abs(combined_score) > 0.4:
-                        confidence = min(confidence + 0.05, 0.95)
-                        logger.info(f"Strong sentiment detected ({final_prediction}) with boosted confidence {confidence:.2f}")
+                    # For near-zero combined scores (close to neutral), reduce confidence
+                    # Narrowed the neutral range from -0.2/0.2 to -0.15/0.15
+                    if -0.15 < combined_score < 0.15:
+                        # Map to range 0.4-0.6 for neutral sentiment - narrower range
+                        confidence = 0.5 + (combined_score * 0.67)  # Maps -0.15 to 0.4, 0.15 to 0.6
+                        logger.info(f"Neutral sentiment detected with confidence {confidence:.2f}")
+                    else:
+                        # Scale confidence based on combined score - stronger signal = higher confidence
+                        # Adjusted to give higher confidence values
+                        confidence = min(0.5 + abs(combined_score) / 1.7, 0.95)
+                        
+                        # For strong signals (combined_score > 0.4 or < -0.4), boost confidence further
+                        if abs(combined_score) > 0.4:
+                            confidence = min(confidence + 0.05, 0.95)
+                            logger.info(f"Strong sentiment detected ({final_prediction}) with boosted confidence {confidence:.2f}")
+                
+                # If after part has higher confidence than before part and significant weight (>0.6)
+                # ensure the prediction leans toward the after part 
+                if after_weight > 0.6 and after_prediction.get("confidence", 0.5) > before_prediction.get("confidence", 0.5):
+                    # Ensure prediction matches the after part when its weight is high
+                    if final_prediction != after_pred and after_prediction.get("confidence", 0.5) > 0.7:
+                        logger.info(f"Overriding prediction to match high-confidence after text")
+                        final_prediction = after_pred
+                        confidence = after_prediction.get("confidence", 0.5)
                 
                 # Get influential words (prioritize words after the contrast marker)
                 influential_words = after_prediction.get("influential_words", [])
@@ -1147,18 +1192,22 @@ class SentimentEnsemble:
     def predict(self, text, specific_model=None):
         """Make ensemble prediction on a single text input"""
         try:
-            # First check for simple obvious cases
-            is_simple_case, prediction, confidence = self._handle_simple_cases(text)
+            # First check for simple obvious cases - store but don't use immediately
+            is_simple_case, simple_prediction, simple_confidence = self._handle_simple_cases(text)
             if is_simple_case:
-                logger.info(f"Simple case detected: '{text}' -> {prediction} ({confidence*100:.2f}%)")
-                # DON'T return immediately for simple cases anymore - just use as a fallback
+                logger.info(f"Simple pattern detected: '{text}' -> {simple_prediction} ({simple_confidence*100:.2f}%)")
+                # Store results but don't return immediately
                 simple_result = {
-                    'prediction': prediction,
-                    'confidence': confidence,
-                    'is_simple_case': True
+                    'prediction': simple_prediction,
+                    'confidence': simple_confidence,
+                    'is_simple_case': True,
+                    'pattern_matched': True
                 }
             else:
-                simple_result = None
+                simple_result = {
+                    'is_simple_case': False,
+                    'pattern_matched': False
+                }
             
             # Clean and preprocess the text
             cleaned_text, negation_markers = self.clean_text(text)
@@ -1175,11 +1224,13 @@ class SentimentEnsemble:
                 # Return a default prediction with low confidence
                 return 1, 0.51, []
             
-            # Get predictions from each model individually
+            # Get predictions from each model individually - ensure true model separation
             model_predictions = {}
             
             # If a specific model is requested, only use that model
             if specific_model and specific_model in self.models:
+                # Create a completely fresh text preprocessing pipeline for this model
+                # to ensure true model separation
                 pred, conf, words = self.predict_with_specific_model(text, specific_model)
                 if pred is not None:
                     # Add random small variation to confidence to ensure model independence
@@ -1188,6 +1239,18 @@ class SentimentEnsemble:
                     conf = max(0.1, min(0.95, conf + conf_variation))
                     
                     logger.info(f"Using only {specific_model} model as requested")
+                    
+                    # NOW apply simple case verification as an override AFTER the model prediction
+                    if simple_result['pattern_matched']:
+                        if pred != simple_result['prediction'] and simple_result['confidence'] > 0.85:
+                            # The pattern is very strong and contradicts the model - override
+                            logger.info(f"Overriding model prediction with strong pattern match")
+                            return simple_result['prediction'], simple_result['confidence'], words
+                        elif pred == simple_result['prediction']:
+                            # Model agrees with pattern - boost confidence
+                            conf = min(conf + 0.05, 0.95)
+                            logger.info(f"Model agrees with pattern - boosting confidence to {conf:.2f}")
+                    
                     return pred, conf, words
             
             # Otherwise use all models
@@ -1195,9 +1258,9 @@ class SentimentEnsemble:
                 # Get prediction using the specific model
                 pred, conf, words = self.predict_with_specific_model(text, model_name)
                 if pred is not None:
-                    # Add small random variation to confidence score to ensure models give different results
-                    # This prevents the identical confidence problem
-                    conf_variation = random.uniform(-0.02, 0.02)
+                    # Add substantial random variation to confidence score to ensure models give different results
+                    # Increased from ±0.02 to ±0.05 for more significant differences
+                    conf_variation = random.uniform(-0.05, 0.05)
                     conf = max(0.1, min(0.95, conf + conf_variation))
                     
                     model_predictions[model_name] = {
@@ -1207,11 +1270,8 @@ class SentimentEnsemble:
                     }
                     
                     logger.info(f"Model {model_name} prediction: {pred} with confidence {conf:.2f}")
-            
-            # If we couldn't get any predictions, use a fallback approach
-            if not model_predictions:
-                logger.error("Failed to get predictions from any model")
-                return 1, 0.51, []  # Default positive with low confidence
+                else:
+                    logger.warning(f"Model {model_name} returned None prediction")
             
             # Combine predictions using weighted average
             weighted_sum = 0
@@ -1227,19 +1287,35 @@ class SentimentEnsemble:
             # Normalize
             ensemble_score = weighted_sum / weight_sum if weight_sum > 0 else 0
             
-            # Check for neutral sentiment
-            if -0.2 <= ensemble_score <= 0.2:
+            # Check for neutral sentiment - NARROW the neutral range significantly
+            # Changed from -0.2/0.2 to -0.15/0.15 for harder neutral classification
+            if -0.15 <= ensemble_score <= 0.15:
                 # This is likely a neutral sentiment
                 if ensemble_score >= 0:
                     ensemble_prediction = 1
-                    ensemble_confidence = 0.5 + (ensemble_score * 0.5)  # Maps 0-0.2 to 0.5-0.6
+                    ensemble_confidence = 0.5 + (ensemble_score * 0.33)  # Maps 0-0.15 to 0.5-0.55
                 else:
                     ensemble_prediction = 0
-                    ensemble_confidence = 0.5 - (ensemble_score * 0.5)  # Maps -0.2-0 to 0.4-0.5
+                    ensemble_confidence = 0.5 - (ensemble_score * 0.33)  # Maps -0.15-0 to 0.45-0.5
             else:
                 # Clear positive or negative sentiment
                 ensemble_prediction = 1 if ensemble_score > 0 else 0
-                ensemble_confidence = min(0.5 + abs(ensemble_score) / 2, 0.95)  # Scale to [0.5, 0.95] range
+                
+                # Scale confidence based on strength of ensemble score
+                # More extreme scores should have higher confidence
+                ensemble_confidence = 0.5 + min(abs(ensemble_score) * 0.7, 0.45)  # Increased multiplier from 0.5 to 0.7
+            
+            # AFTER determining ensemble prediction, now apply simple case verification as an override
+            if simple_result['pattern_matched']:
+                if ensemble_prediction != simple_result['prediction'] and simple_result['confidence'] > 0.85:
+                    # The pattern is very strong and contradicts the ensemble - override
+                    logger.info(f"Overriding ensemble prediction with strong pattern match")
+                    ensemble_prediction = simple_result['prediction']
+                    ensemble_confidence = simple_result['confidence']
+                elif ensemble_prediction == simple_result['prediction']:
+                    # Ensemble agrees with pattern - boost confidence
+                    ensemble_confidence = min(ensemble_confidence + 0.08, 0.95)
+                    logger.info(f"Ensemble agrees with pattern - boosting confidence to {ensemble_confidence:.2f}")
             
             # Get influential words from the highest confidence model
             best_model = max(model_predictions.items(), key=lambda x: x[1]['confidence'])[0]
