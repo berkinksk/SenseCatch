@@ -60,19 +60,6 @@ The system has been rigorously evaluated on multiple datasets:
 - **Model Size**: 5.7MB optimized with feature selection
 - **Scalability**: Successfully tested with 100 concurrent requests
 
-## Research Applications & Future Work
-
-This implementation demonstrates potential applications in:
-
-1. **Cross-domain sentiment transfer learning**: The architecture shows promising results in transferring between domains
-2. **Explainable AI**: The hybrid approach provides natural explanations for predictions
-3. **Low-resource language adaptation**: The pattern recognition components can be adapted to new languages with minimal data
-
-Planned extensions include:
-- Implementation of attention mechanisms for improved context sensitivity
-- Integration of transformer-based embeddings with the symbolic components
-- Development of an interpretable neurosymbolic model for counterfactual reasoning
-
 ## Installation & Development
 
 ### Prerequisites
@@ -126,9 +113,7 @@ A web interface is also available at `https://sensecatch.ai`
 
 ## Deployment
 
-The system is deployed on render.com cloud infrastructure:
-- Production environment: [sensecatch.ai](https://sensecatch.ai)
-- Development environment: [sensecatch-dev.onrender.com](https://sensecatch-dev.onrender.com)
+The system is deployed on render.com cloud infrastructure.
 
 ## Publications & References
 
@@ -143,6 +128,4 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## Author
 
-Berkin Keske - Software Engineering Student and AI Researcher
-- Eastern Mediterranean University (B.Sc. Software Engineering)
-- TU Darmstadt (M.Sc. Artificial Intelligence and Machine Learning) Applicant
+Berkin Kaynar
