@@ -81,9 +81,19 @@ class SentimentEnsemble:
         }
         # Add common movie title list for entity recognition
         self.movie_titles = self._load_movie_titles()
-        # Add this line to the __init__ method before self._load_models()
-        self.movie_titles = self._load_movie_titles()
+        # Initialize tfidf_vectorizer
+        self.tfidf_vectorizer = None
         self._load_models()
+        
+        # Ensure we have a tfidf_vectorizer by setting it from the loaded vectorizers
+        if 'logistic_regression' in self.vectorizers:
+            self.tfidf_vectorizer = self.vectorizers['logistic_regression']
+            logger.info("Using logistic_regression vectorizer as tfidf_vectorizer")
+        elif 'naive_bayes' in self.vectorizers:
+            self.tfidf_vectorizer = self.vectorizers['naive_bayes']
+            logger.info("Using naive_bayes vectorizer as tfidf_vectorizer")
+        else:
+            logger.error("No vectorizer found for feature extraction")
     
     def _load_movie_titles(self):
         """Load a comprehensive list of movie titles from multiple sources"""
@@ -1759,3 +1769,20 @@ class SentimentEnsemble:
             logger.info(f"Restaurant review detected: food terms={food_terms_found}, service terms={service_terms_found}")
             
         return (is_restaurant_review, food_terms_found, service_terms_found)
+
+    def _extract_features(self, text):
+        """
+        Extract features from processed text for prediction.
+        This vectorizes the text using the model's vectorizers.
+        """
+        try:
+            # Create a feature set using TF-IDF features
+            features = self.tfidf_vectorizer.transform([text])
+            return features
+        except Exception as e:
+            logger.error(f"Error extracting features: {e}")
+            # Emergency fallback: return an empty sparse matrix with the correct dimensions
+            from scipy.sparse import csr_matrix
+            import numpy as np
+            feature_count = len(self.tfidf_vectorizer.get_feature_names_out())
+            return csr_matrix((1, feature_count), dtype=np.float64)
