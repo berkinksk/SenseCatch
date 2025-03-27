@@ -747,47 +747,100 @@ class SentimentEnsemble:
                     strong_positive_markers = [
                         "good", "great", "excellent", "amazing", "fantastic", "wonderful", 
                         "enjoyed", "love", "loved", "best", "perfect", "delicious", "recommend",
-                        "worth", "impressive"
+                        "worth", "impressive", "tasty", "flavorful", "yummy", "delightful", 
+                        "satisfying", "mouthwatering", "scrumptious", "heavenly", "divine", 
+                        "superb", "outstanding", "stellar"
+                    ]
+                    
+                    strong_negative_markers = [
+                        "bad", "terrible", "awful", "horrible", "disgusting", "disappointing",
+                        "mediocre", "bland", "tasteless", "inedible", "overcooked", "undercooked",
+                        "stale", "rotten", "expensive", "overpriced", "poor", "worst"
                     ]
                     
                     # Added emphasis words that boost the effect of positive/negative terms
                     emphasis_words = [
                         "very", "extremely", "absolutely", "truly", "really", "definitely",
-                        "quite", "especially", "particularly", "exceptionally", "remarkably"
+                        "quite", "especially", "particularly", "exceptionally", "remarkably",
+                        "incredibly", "unbelievably", "surprisingly", "astonishingly", "totally"
                     ]
                     
-                    # Counter for positive strong terms after contrast marker
+                    # Use our specialized restaurant detector
+                    is_restaurant, food_term_count, service_term_count = self._is_restaurant_review(text)
+                    
+                    # Counter for positive and negative strong terms after contrast marker
                     strong_pos_count = 0
+                    strong_neg_count = 0
                     
                     # Detect strong positive terms after contrast marker
                     after_words = after_text.lower().split()
                     for term in strong_positive_markers:
-                        if term in after_words:
+                        if term in after_text.lower():
                             strong_pos_count += 1
                             logger.info(f"Strong positive term after contrast: '{term}'")
                     
-                    # Check for emphasis + positive combinations (e.g., "absolutely delicious")
+                    # Detect strong negative terms after contrast marker
+                    for term in strong_negative_markers:
+                        if term in after_text.lower():
+                            strong_neg_count += 1
+                            logger.info(f"Strong negative term after contrast: '{term}'")
+                    
+                    # Check for emphasis + positive/negative combinations (e.g., "absolutely delicious")
                     emphasis_pos_combinations = 0
-                    for i, word in enumerate(after_words[:-1]):
-                        if word in emphasis_words and after_words[i+1] in strong_positive_markers:
-                            emphasis_pos_combinations += 1
-                            logger.info(f"Emphasis + positive combination: '{word} {after_words[i+1]}'")
+                    emphasis_neg_combinations = 0
+                    
+                    for emphasis in emphasis_words:
+                        for pos_term in strong_positive_markers:
+                            if f"{emphasis} {pos_term}" in after_text.lower():
+                                emphasis_pos_combinations += 1
+                                logger.info(f"Emphasis + positive combination: '{emphasis} {pos_term}'")
+                        
+                        for neg_term in strong_negative_markers:
+                            if f"{emphasis} {neg_term}" in after_text.lower():
+                                emphasis_neg_combinations += 1
+                                logger.info(f"Emphasis + negative combination: '{emphasis} {neg_term}'")
                     
                     # Forced sentiment flags
                     has_forcing_positive = False
                     has_forcing_negative = False
                     
-                    # Special restaurant case detection
-                    is_restaurant_case = 'food' in after_text.lower() or 'restaurant' in text.lower()
-                    
-                    # Enhanced "food was X" pattern detection - critical for restaurant reviews 
-                    food_adjective_pattern = re.search(r'food\s+was\s+(\w+)', after_text.lower())
-                    if food_adjective_pattern:
-                        adjective = food_adjective_pattern.group(1)
-                        if adjective in strong_positive_markers:
-                            logger.info(f"Special 'food was {adjective}' positive pattern detected")
+                    # Enhanced restaurant-specific pattern detection
+                    if is_restaurant:
+                        logger.info(f"Restaurant review detected with {food_term_count} food terms and {service_term_count} service terms")
+                        
+                        # Critical food quality patterns - high-impact on restaurant sentiment
+                        food_quality_patterns = [
+                            (r'food\s+was\s+(\w+)', strong_positive_markers, True),  # "food was excellent" → positive
+                            (r'food\s+was\s+(\w+)', strong_negative_markers, False),  # "food was terrible" → negative
+                            (r'(\w+)\s+food', strong_positive_markers, True),         # "delicious food" → positive
+                            (r'(\w+)\s+food', strong_negative_markers, False),        # "terrible food" → negative
+                            (r'meal\s+was\s+(\w+)', strong_positive_markers, True),   # "meal was excellent" → positive
+                            (r'meal\s+was\s+(\w+)', strong_negative_markers, False),  # "meal was terrible" → negative
+                        ]
+                        
+                        for pattern, term_list, is_positive in food_quality_patterns:
+                            matches = re.finditer(pattern, after_text.lower())
+                            for match in matches:
+                                adjective = match.group(1)
+                                if adjective in term_list:
+                                    logger.info(f"Critical restaurant pattern: '{match.group(0)}' → {'positive' if is_positive else 'negative'}")
+                                    if is_positive:
+                                        has_forcing_positive = True
+                                        strong_pos_count += 2  # Double weight for explicit food quality statements
+                                    else:
+                                        has_forcing_negative = True
+                                        strong_neg_count += 2  # Double weight for explicit food quality statements
+                        
+                        # Restaurant "despite/although/even though" + negative service + positive food = positive
+                        if (marker in ['despite ', 'although ', 'even though '] and 
+                            service_term_count >= 1 and 
+                            food_term_count >= 1 and 
+                            strong_pos_count > 0):
+                            # Example: "Despite the noisy atmosphere, the food was excellent"
+                            logger.info(f"Restaurant review with positive food despite negative service/ambiance")
                             has_forcing_positive = True
-                            strong_pos_count += 1
+                            before_weight = 0.25  # Greatly reduce weight of negative service aspects
+                            after_weight = 0.75   # Strongly emphasize food quality
                     
                     # Check for positive/negative forcing based on the marker and the content after it
                     if marker == 'but ' or marker == 'however ' or marker == 'yet ':
@@ -798,15 +851,30 @@ class SentimentEnsemble:
                         
                         # For restaurant case with "but" followed by positive term about food, 
                         # the after part becomes even more important
-                        if is_restaurant_case and strong_pos_count > 0:
+                        if is_restaurant and strong_pos_count > 0:
                             logger.info(f"Restaurant case with positive food description detected")
-                            before_weight = 0.3  # Further reduce weight of before part
-                            after_weight = 0.7  # Strongly emphasize after part with food description
+                            before_weight = 0.25  # Further reduce weight of before part
+                            after_weight = 0.75   # Strongly emphasize after part with food description
                             
-                            # If we have "but the food was delicious" pattern, force positive
+                            # Restaurant specific forcing for "but the food was X" patterns
                             if strong_pos_count >= 1 or emphasis_pos_combinations > 0:
-                                logger.info(f"Restaurant with strong positive food terms - forcing positive signal")
+                                if food_term_count >= 1:
+                                    logger.info(f"Restaurant with strong positive food terms - forcing positive signal")
+                                    has_forcing_positive = True
+                            
+                            # If the after part has significantly more positive than negative terms, favor positive
+                            if (strong_pos_count - strong_neg_count) >= 2:
+                                logger.info(f"Restaurant review with strong positive balance after contrast")
                                 has_forcing_positive = True
+                        
+                        # Restaurant case with negative food sentiment overrides positive service
+                        elif is_restaurant and strong_neg_count > 0 and food_term_count >= 1:
+                            logger.info(f"Restaurant with negative food description - forcing negative signal")
+                            before_weight = 0.25
+                            after_weight = 0.75
+                            
+                            if strong_neg_count >= 1 or emphasis_neg_combinations > 0:
+                                has_forcing_negative = True
                         
                         # For other "but" with multiple strong positive terms, consider forcing positive
                         elif strong_pos_count >= 2 or emphasis_pos_combinations >= 1:
@@ -825,6 +893,19 @@ class SentimentEnsemble:
                             
                             # Log the adjustment
                             logger.info(f"Adjusted weights for positive after-text: before={before_weight:.2f}, after={after_weight:.2f}")
+                        
+                        # Similarly for strong negative patterns
+                        elif strong_neg_count >= 2 or emphasis_neg_combinations >= 1:
+                            logger.info(f"Multiple strong negative terms after 'but' - forcing negative signal")
+                            has_forcing_negative = True
+                            
+                            # Adjust weights for strong negative signals
+                            neg_factor = min(strong_neg_count * 0.05, 0.2)
+                            total = before_weight + after_weight
+                            before_weight = max(before_weight - neg_factor, 0.05)
+                            after_weight = total - before_weight
+                            
+                            logger.info(f"Adjusted weights for negative after-text: before={before_weight:.2f}, after={after_weight:.2f}")
                     
                     # Return the parts with weights and forcing flags
                     return {
@@ -837,8 +918,10 @@ class SentimentEnsemble:
                         "has_forced_positive": has_forcing_positive,
                         "has_forced_negative": has_forcing_negative,
                         "strong_positive_count": strong_pos_count,
-                        "emphasis_combinations": emphasis_pos_combinations,
-                        "is_restaurant_case": is_restaurant_case
+                        "strong_negative_count": strong_neg_count,
+                        "emphasis_pos_combinations": emphasis_pos_combinations,
+                        "emphasis_neg_combinations": emphasis_neg_combinations,
+                        "is_restaurant_case": is_restaurant
                     }
             
             # No contrast markers found
@@ -1223,6 +1306,30 @@ class SentimentEnsemble:
         if contradiction_info is None:
             contradiction_info = {"contradiction_detected": False}
         
+        # Check for restaurant review with contrast markers
+        restaurant_info = {"is_restaurant": False}
+        is_restaurant, food_count, service_count = self._is_restaurant_review(original_text)
+        
+        # Process contrast markers for more nuanced understanding
+        contrast_info = self.process_contrast_markers(original_text)
+        
+        # Special handling for restaurant reviews with contrast markers
+        if is_restaurant and contrast_info.get("has_contrast", False):
+            restaurant_info = {
+                "is_restaurant": True,
+                "food_count": food_count,
+                "service_count": service_count,
+                "has_contrast": True,
+                "contrast_marker": contrast_info.get("contrast_marker", ""),
+                "has_forced_positive": contrast_info.get("has_forced_positive", False),
+                "has_forced_negative": contrast_info.get("has_forced_negative", False)
+            }
+            logger.info(f"Restaurant review with contrast marker '{contrast_info.get('contrast_marker')}' detected")
+            
+            # If we have a strong restaurant pattern that forces sentiment, respect it
+            if contrast_info.get("has_forced_positive", False):
+                logger.info(f"[{modelname}] Restaurant review with forced POSITIVE sentiment")
+                
         # Get the model to use
         model = self.models[modelname]
         
@@ -1236,8 +1343,63 @@ class SentimentEnsemble:
         # Default model name
         model_name = modelname
         
+        # Check for special overrides from restaurant + contrast detection (highest priority)
+        if restaurant_info["is_restaurant"] and restaurant_info["has_contrast"]:
+            # If restaurant pattern detection found a forced sentiment, apply it
+            if restaurant_info["has_forced_positive"]:
+                logger.info(f"[{modelname}] Forcing POSITIVE prediction for restaurant review with contrast marker")
+                prediction = 1  # Force positive
+                confidence = max(0.80, confidence)  # Higher confidence for food quality statements
+                model_name = f"{modelname}_with_restaurant_analysis"
+            elif restaurant_info["has_forced_negative"]:
+                logger.info(f"[{modelname}] Forcing NEGATIVE prediction for restaurant review with contrast marker")
+                prediction = 0  # Force negative
+                confidence = max(0.82, confidence)  # Higher confidence for food quality statements
+                model_name = f"{modelname}_with_restaurant_analysis"
+            elif contrast_info.get("has_contrast", False):
+                # Use weighted prediction for contrast cases without forced sentiment
+                logger.info(f"[{modelname}] Using weighted contrast prediction for restaurant review")
+                
+                # Apply separate analysis to parts before and after contrast marker
+                try:
+                    before_features = self._extract_features(contrast_info["before"])
+                    after_features = self._extract_features(contrast_info["after"])
+                    
+                    before_pred = model.predict(before_features)[0]
+                    after_pred = model.predict(after_features)[0]
+                    
+                    before_weight = contrast_info.get("before_weight", 0.4)
+                    after_weight = contrast_info.get("after_weight", 0.6)
+                    
+                    # In restaurant reviews, the food quality often matters more
+                    if food_count > 0 and "food" in contrast_info["after"].lower():
+                        logger.info(f"Further emphasizing after-part containing food references")
+                        # If after part contains food references, give it even more weight
+                        total = before_weight + after_weight
+                        before_weight = before_weight * 0.7  # Reduce before weight
+                        after_weight = total - before_weight  # Increase after weight
+                    
+                    # Do weighted combination (considering 1=positive, 0=negative)
+                    weighted_score = (before_pred * before_weight) + (after_pred * after_weight)
+                    
+                    # Determine final prediction
+                    if weighted_score >= 0.5:
+                        prediction = 1
+                        confidence = max(0.6, weighted_score) 
+                    else:
+                        prediction = 0
+                        confidence = max(0.6, 1 - weighted_score)
+                    
+                    # Adjust confidence based on the difference in weights
+                    confidence = min(confidence + abs(before_weight - after_weight) * 0.1, 0.95)
+                    
+                    model_name = f"{modelname}_with_restaurant_contrast_analysis"
+                    logger.info(f"Restaurant contrast analysis: weighted score={weighted_score:.2f}, confidence={confidence:.2f}")
+                except Exception as e:
+                    logger.error(f"Error in restaurant contrast analysis: {e}")
+        
         # Check for special overrides from sarcasm detection
-        if sarcasm_info["sarcasm_detected"]:
+        elif sarcasm_info["sarcasm_detected"]:
             logger.info(f"Sarcasm detection will influence prediction: {sarcasm_info['sarcasm_type']}")
             
             if sarcasm_info["force_sentiment"] == "positive":
@@ -1553,3 +1715,47 @@ class SentimentEnsemble:
             logger.info(f"Safety adjustment: Reduced confidence from {original_confidence:.2f}% to {reduced_confidence:.2f}%")
         
         return prediction_result
+
+    def _is_restaurant_review(self, text):
+        """
+        Detect if text is likely a restaurant review based on food/dining terms.
+        Returns a tuple (is_restaurant, food_terms_found, service_terms_found)
+        """
+        text = text.lower()
+        
+        # Terms that indicate food or restaurant context
+        food_terms = [
+            "food", "meal", "dish", "restaurant", "cafe", "diner", "bistro", 
+            "menu", "waiter", "waitress", "server", "chef", "cuisine", "dinner", 
+            "lunch", "breakfast", "appetizer", "entree", "dessert", "plate",
+            "delicious", "tasty", "flavorful", "savory", "tender", "juicy",
+            "spicy", "bland", "fresh", "stale", "overcooked", "undercooked",
+            "pasta", "steak", "fish", "chicken", "seafood", "vegetarian", "vegan",
+            "pizza", "burger", "salad", "fries", "rice", "noodles", "sushi", 
+            "taco", "burrito", "sandwich", "soup", "buffet", "brunch", "dining",
+            "eat", "ate", "eaten", "tasted", "ordered", "served", "portion"
+        ]
+        
+        # Terms specific to restaurant service/ambiance
+        service_terms = [
+            "service", "staff", "waiter", "waitress", "server", "host", "hostess",
+            "manager", "tip", "reservation", "wait time", "waiting", "seated",
+            "crowded", "busy", "queue", "line", "atmosphere", "ambiance", "ambience",
+            "decor", "noisy", "quiet", "clean", "dirty", "hygiene", "bathroom",
+            "restroom", "table", "seating", "chair", "booth", "patio", "outdoor",
+            "indoor", "bar", "lounge", "price", "expensive", "cheap", "affordable",
+            "overpriced", "worth", "value", "money"
+        ]
+        
+        # Count occurrences of each type of term
+        food_terms_found = sum(1 for term in food_terms if term in text)
+        service_terms_found = sum(1 for term in service_terms if term in text)
+        
+        # Combined score (weighted)
+        is_restaurant_review = (food_terms_found >= 2 or service_terms_found >= 2 or 
+                              (food_terms_found >= 1 and service_terms_found >= 1))
+        
+        if is_restaurant_review:
+            logger.info(f"Restaurant review detected: food terms={food_terms_found}, service terms={service_terms_found}")
+            
+        return (is_restaurant_review, food_terms_found, service_terms_found)
