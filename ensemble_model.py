@@ -1419,6 +1419,9 @@ class SentimentEnsemble:
             else:
                 model_names = list(self.models.keys())
             
+            # Keep track of the model name for the response
+            base_model_name = specific_model if specific_model else "ensemble"
+            
             # Check for sarcasm and idioms first - these can override model predictions
             if sarcasm_info["sarcasm_detected"]:
                 logger.info(f"Sarcasm detection will influence prediction: {sarcasm_info['sarcasm_type']}")
@@ -1461,11 +1464,15 @@ class SentimentEnsemble:
                     })
                 
                 sentiment_label = "Positive" if ensemble_prediction == 1 else "Negative"
+                
+                # Preserve original model name while indicating sarcasm detection
+                model_used = f"{base_model_name}_with_sarcasm_detection"
+                
                 return {
                     "sentiment": sentiment_label,
                     "confidence": boosted_confidence * 100,  # Convert to percentage
                     "influential_words": influential_words,
-                    "model_used": "ensemble_with_sarcasm_detection"
+                    "model_used": model_used
                 }
             
             # Check for idioms next
@@ -1510,11 +1517,15 @@ class SentimentEnsemble:
                     })
                 
                 sentiment_label = "Positive" if ensemble_prediction == 1 else "Negative"
+                
+                # Preserve original model name while indicating idiom detection
+                model_used = f"{base_model_name}_with_idiom_detection"
+                
                 return {
                     "sentiment": sentiment_label,
                     "confidence": boosted_confidence * 100,  # Convert to percentage
                     "influential_words": influential_words,
-                    "model_used": "ensemble_with_idiom_detection"
+                    "model_used": model_used
                 }
             
             # If no sarcasm or idioms detected, proceed with normal prediction
