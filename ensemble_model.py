@@ -1556,7 +1556,7 @@ class SentimentEnsemble:
             simple_case_override = simple_case
             
         # Clean the text
-        cleaned_text = self.clean_text(text)
+        cleaned_text, negation_markers, special_phrase_info = self.clean_text(text)
         
         # Check for explicit neutral sentiment before running the models
         is_neutral, neutral_confidence = self._detect_neutral_sentiment(text)
@@ -1584,112 +1584,111 @@ class SentimentEnsemble:
             logger.info("Safety check: Mild concern detected. Continuing with analysis but will adjust confidence.")
             # We'll handle confidence adjustment later, after model predictions
         
-        # Check for sarcasm patterns
+        # Setup sarcasm, idiom and contradiction detection if enabled
+        sarcasm_info = None
+        idiom_info = None
+        contradiction_info = None
+        
         if use_sarcasm_detection:
             sarcasm_result = self._detect_sarcasm(text)
             if sarcasm_result:
                 sentiment, confidence, pattern_type = sarcasm_result
-                logger.info(f"Sarcasm detection will influence prediction: {pattern_type}")
-                if modelname:
-                    logger.info(f"[{modelname}] Forcing {sentiment} prediction due to sarcasm: '{pattern_type}'")
-                
-                return {
-                    "text": text,
-                    "sentiment": sentiment,
-                    "confidence": confidence,
-                    "model_used": f"{modelname if modelname else 'default'}_with_sarcasm_detection"
+                sarcasm_info = {
+                    "sarcasm_detected": True,
+                    "sarcasm_type": pattern_type,
+                    "sarcastic_phrase": pattern_type,
+                    "force_sentiment": "positive" if sentiment == "Positive" else "negative",
+                    "confidence_adjustment": (confidence - 75) / 100  # Adjustment factor based on confidence
                 }
-            
-        # Check for idioms
+            else:
+                sarcasm_info = {"sarcasm_detected": False}
+                
         if use_idiom_detection:
             idiom_result = self._detect_idioms(text)
             if idiom_result:
                 sentiment, confidence, pattern_type = idiom_result
-                logger.info(f"Idiom detection will influence prediction: {pattern_type}")
-                if modelname:
-                    logger.info(f"[{modelname}] Forcing {sentiment} prediction due to idiom: '{pattern_type}'")
-                
-                return {
-                    "text": text,
-                    "sentiment": sentiment,
-                    "confidence": confidence,
-                    "model_used": f"{modelname if modelname else 'default'}_with_idiom_detection"
+                idiom_info = {
+                    "idiom_detected": True,
+                    "idiom_type": pattern_type,
+                    "detected_idiom": pattern_type,
+                    "force_sentiment": "positive" if sentiment == "Positive" else "negative",
+                    "confidence_adjustment": (confidence - 75) / 100
                 }
+            else:
+                idiom_info = {"idiom_detected": False}
                 
-        # Check for contradictions
         if use_contradiction_detection:
             contradiction_result = self._detect_contradiction(text)
             if contradiction_result:
                 sentiment, confidence, pattern_type = contradiction_result
-                if modelname:
-                    logger.info(f"[{modelname}] Forcing {sentiment} prediction due to contradiction: '{pattern_type}'")
-                
-                return {
-                    "text": text,
-                    "sentiment": sentiment,
-                    "confidence": confidence,
-                    "model_used": f"{modelname if modelname else 'default'}_with_contradiction_detection"
+                contradiction_info = {
+                    "contradiction_detected": True,
+                    "detected_phrase": pattern_type,
+                    "force_sentiment": "positive" if sentiment == "Positive" else "negative",
+                    "confidence_adjustment": (confidence - 75) / 100,
+                    "second_part": pattern_type.split("!")[-1] if "!" in pattern_type else ""
                 }
+            else:
+                contradiction_info = {"contradiction_detected": False}
         
         # Get predictions from the models
-        predictions = {}
-        confidences = {}
+        model_predictions = {}
+        
+        # Prepare simple case for model
+        simple_case_results = {}
+        if simple_case_override is not None:
+            simple_case_results = {
+                "is_simple_case": True,
+                "prediction": 1 if simple_case_override == "Positive" else 0,
+                "confidence": 0.90 + (0.05 * random.random())  # 90-95% confidence
+            }
         
         # If a specific model is specified, use that one
         if modelname:
             if modelname in self.models:
                 logger.info(f"Using specified model: {modelname}")
-                predictions[modelname], confidences[modelname] = self.predict_with_specific_model(text, cleaned_text, modelname)
+                model_predictions[modelname] = self.predict_with_specific_model(
+                    text, cleaned_text, modelname, 
+                    simple_case_results=simple_case_results,
+                    sarcasm_info=sarcasm_info,
+                    idiom_info=idiom_info,
+                    contradiction_info=contradiction_info
+                )
             else:
                 raise ValueError(f"Invalid model name: {modelname}")
         else:
             # Use all models
             for model_name in self.models:
-                predictions[model_name], confidences[model_name] = self.predict_with_specific_model(text, cleaned_text, model_name)
-        
-        # Apply simple case override if appropriate
-        for model in predictions:
-            if simple_case_override is not None:
-                if model:
-                    logger.info(f"[{model}] Overriding with simple case detection: {simple_case_override}")
-                predictions[model] = simple_case_override
-                confidences[model] = 90 + (5 * random.random())  # 90-95% confidence 
+                model_predictions[model_name] = self.predict_with_specific_model(
+                    text, cleaned_text, model_name,
+                    simple_case_results=simple_case_results,
+                    sarcasm_info=sarcasm_info,
+                    idiom_info=idiom_info,
+                    contradiction_info=contradiction_info
+                )
         
         # Process the results
-        result_sentiment = None
-        sentiment_confidence = 0
-        model_used = None
-        
         # If we have a specific model, use just its results
         if modelname:
-            result_sentiment = "Positive" if predictions[modelname] == 1 else "Negative" if predictions[modelname] == 0 else "Neutral"
-            sentiment_confidence = confidences[modelname]
-            model_used = modelname
+            return model_predictions[modelname]
         else:
             # Combine results from all models
-            # Calculate ensemble prediction (average of all models)
-            ensemble_score = 0
-            ensemble_confidence = 0
-            
-            # Count positive and negative predictions
+            # Get ensemble prediction by analyzing all model outputs
             positive_count = 0
             negative_count = 0
+            total_confidence = 0
             
-            for model_name, prediction in predictions.items():
-                if prediction == 1:  # Positive
+            for model_name, result in model_predictions.items():
+                if result["sentiment"] == "Positive":
                     positive_count += 1
-                    ensemble_score += 1 * (confidences[model_name] / 100)
                 else:  # Negative
                     negative_count += 1
-                    ensemble_score += 0 * (confidences[model_name] / 100)
                 
-                ensemble_confidence += confidences[model_name] / 100
+                total_confidence += result["confidence"]
             
-            # Average the ensemble score and confidence
-            if len(predictions) > 0:
-                ensemble_score = ensemble_score / len(predictions)
-                ensemble_confidence = ensemble_confidence / len(predictions)
-                
+            # Average the confidence
+            avg_confidence = total_confidence / len(model_predictions) if model_predictions else 75.0
+            
             # Handle potential neutral case (when models are in significant disagreement)
             if abs(positive_count - negative_count) <= 1 and len(predictions) > 2:
                 # Models are split or almost split - could be neutral
