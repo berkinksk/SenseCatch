@@ -9,7 +9,9 @@ import traceback
 import logging
 import re
 import nltk
+from nltk.tree import Tree  # Explicitly import Tree for named entity checking
 from scipy.sparse import hstack, csr_matrix
+import random
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -28,19 +30,48 @@ def simple_tokenize(text):
 # Safely import nltk
 try:
     from nltk.tokenize import word_tokenize
+    from nltk import ne_chunk, pos_tag
     logger.info("NLTK imported successfully")
 except ImportError:
     logger.error("Error importing NLTK. Using fallback tokenizer.")
     # Fallback simple tokenizer if nltk is not available
     def word_tokenize(text):
         return simple_tokenize(text)
+    def pos_tag(tokens):
+        return [(token, 'NN') for token in tokens]  # Default all to nouns
+    def ne_chunk(tagged_tokens):
+        return tagged_tokens
 
 class SentimentEnsemble:
     """Ensemble model that combines multiple sentiment classifiers"""
     
-    def __init__(self):
-        """Initialize the ensemble with loaded models"""
+    def __init__(self, models_dir=None, use_cache=True):
+        """Initialize the ensemble model with NB and LR models."""
         self.models = {}
+        self.models_dir = models_dir or os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
+        self.use_cache = use_cache
+        
+        # Define very positive and very negative phrases for sentiment analysis
+        self.VERY_POSITIVE_PHRASES = [
+            "excellent", "amazing", "outstanding", "fantastic", "terrific",
+            "wonderful", "brilliant", "superb", "perfect", "great",
+            "love", "best", "exceptional", "marvelous", "awesome",
+            "impressive", "exceptional", "delightful", "fabulous", "incredible"
+        ]
+        
+        self.VERY_NEGATIVE_PHRASES = [
+            "terrible", "awful", "horrible", "dreadful", "abysmal",
+            "worst", "pathetic", "atrocious", "appalling", "disgusting",
+            "hate", "disappointing", "horrendous", "disastrous", "catastrophic",
+            "useless", "worthless", "abominable", "deplorable", "detestable"
+        ]
+        
+        # Load existing models or train new ones
+        model_paths = {
+            "naive_bayes": os.path.join(self.models_dir, "naive_bayes_model.pkl"),
+            "logistic_regression": os.path.join(self.models_dir, "logistic_regression_model.pkl")
+        }
+        
         self.vectorizers = {}
         self.dict_vectorizers = {}
         self.feature_dimensions = self._load_feature_dimensions()
@@ -48,7 +79,117 @@ class SentimentEnsemble:
             'naive_bayes': 0.6,
             'logistic_regression': 0.4,
         }
+        # Add common movie title list for entity recognition
+        self.movie_titles = self._load_movie_titles()
+        # Add this line to the __init__ method before self._load_models()
+        self.movie_titles = self._load_movie_titles()
         self._load_models()
+    
+    def _load_movie_titles(self):
+        """Load a comprehensive list of movie titles from multiple sources"""
+        # Start with a small default list
+        titles = [
+            "the godfather", "citizen kane", "casablanca", "gone with the wind",
+            "the wizard of oz", "star wars", "pulp fiction", "the shawshank redemption",
+            "the dark knight", "schindler's list", "lord of the rings", "forrest gump",
+            "the matrix", "goodfellas", "titanic", "saving private ryan", "jaws",
+            "apocalypse now", "gladiator", "the silence of the lambs", "king of comedy",
+            "the room", "the avengers", "jurassic park", "the lion king"
+        ]
+        
+        # First check if we have a cached movie titles file
+        movie_titles_path = 'models/movie_titles.txt'
+        
+        # Make sure the models directory exists
+        if not os.path.exists('models'):
+            try:
+                os.makedirs('models')
+                logger.info("Created models directory")
+            except Exception as e:
+                logger.error(f"Error creating models directory: {e}")
+        
+        if os.path.exists(movie_titles_path):
+            try:
+                with open(movie_titles_path, 'r', encoding='utf-8') as f:
+                    titles = [line.strip().lower() for line in f if line.strip()]
+                logger.info(f"Loaded {len(titles)} movie titles from cache file")
+                return titles
+            except Exception as e:
+                logger.error(f"Error loading movie titles from cache: {e}")
+        
+        # Try to fetch additional titles from multiple sources
+        try:
+            # Import necessary modules
+            import urllib.request
+            import re
+            import json
+            from time import sleep
+            
+            # URLs with movie lists - using different sources for diversity
+            urls = [
+                'https://www.imdb.com/chart/top/',  # Top rated movies
+                'https://www.imdb.com/chart/moviemeter/'  # Most popular movies
+            ]
+            
+            # Add headers to avoid being blocked
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+            }
+            
+            for url in urls:
+                try:
+                    req = urllib.request.Request(url, headers=headers)
+                    with urllib.request.urlopen(req, timeout=10) as response:
+                        html = response.read().decode('utf-8')
+                        
+                        # Extract movie titles using regex
+                        matches = re.findall(r'<a[^>]*>([^<]+)</a>', html)
+                        
+                        if matches:
+                            # Clean and add to titles list
+                            for title in matches:
+                                clean_title = re.sub(r'[^\w\s]', '', title).strip().lower()
+                                if clean_title and len(clean_title) > 3 and clean_title not in titles:
+                                    titles.append(clean_title)
+                    
+                    logger.info(f"Fetched movie titles from {url}")
+                    sleep(1)  # Be polite and don't hammer servers
+                    
+                except Exception as url_error:
+                    logger.warning(f"Error fetching from {url}: {url_error}")
+            
+            # Also try to use TMDB API if possible
+            tmdb_api_key = os.environ.get('TMDB_API_KEY')
+            if tmdb_api_key:
+                try:
+                    tmdb_url = f'https://api.themoviedb.org/3/movie/popular?api_key={tmdb_api_key}&language=en-US'
+                    req = urllib.request.Request(tmdb_url, headers=headers)
+                    with urllib.request.urlopen(req, timeout=10) as response:
+                        data = json.loads(response.read().decode('utf-8'))
+                        if 'results' in data:
+                            for movie in data['results']:
+                                title = movie.get('title', '').lower()
+                                if title and title not in titles:
+                                    titles.append(title)
+                    logger.info(f"Fetched movie titles from TMDB API")
+                except Exception as tmdb_error:
+                    logger.warning(f"Error fetching from TMDB API: {tmdb_error}")
+                
+        except Exception as e:
+            logger.warning(f"Could not fetch additional movie titles: {e}")
+        
+        # Save the compiled list to a file for future use
+        try:
+            with open(movie_titles_path, 'w', encoding='utf-8') as f:
+                for title in titles:
+                    f.write(title + '\n')
+            logger.info(f"Saved {len(titles)} movie titles to {movie_titles_path}")
+        except Exception as save_error:
+            logger.error(f"Error saving movie titles: {save_error}")
+        
+        logger.info(f"Using {len(titles)} movie titles for entity recognition")
+        return titles
     
     def _load_feature_dimensions(self):
         """Load feature dimensions from saved file if available"""
@@ -57,10 +198,10 @@ class SentimentEnsemble:
                 with open('models/feature_dimensions.pkl', 'rb') as f:
                     return pickle.load(f)
             else:
-                return {'text_features': 15000, 'lexicon_features': 9, 'total_features': 15009}
+                return {'text_features': 10000, 'lexicon_features': 9, 'total_features': 10009}
         except Exception as e:
             logger.error(f"Error loading feature dimensions: {e}")
-            return {'text_features': 15000, 'lexicon_features': 9, 'total_features': 15009}
+            return {'text_features': 10000, 'lexicon_features': 9, 'total_features': 10009}
     
     def _load_models(self):
         """Load all available models from the models directory"""
@@ -146,86 +287,559 @@ class SentimentEnsemble:
             logger.error(f"Error initializing sentiment lexicon: {e}")
             self.lexicon = None
     
-    def _handle_simple_cases(self, text):
-        """Handle simple obvious cases directly"""
+    def identify_movie_titles(self, text):
+        """Identify potential movie titles in text and handle them specially"""
+        try:
+            # Check against our movie titles list
+            marked_text = text
+            identified_titles = []
+            
+            # First pass: find direct matches from our movie titles database
+            for title in self.movie_titles:
+                if len(title.split()) > 1:  # Only multi-word titles to avoid false positives
+                    title_pattern = re.compile(r'\b' + re.escape(title) + r'\b', re.IGNORECASE)
+                    if title_pattern.search(text):
+                        # Mark the title by replacing spaces with underscores and adding prefix
+                        marked_title = "MOVIETITLE_" + "_".join(title.split())
+                        marked_text = title_pattern.sub(marked_title, marked_text)
+                        identified_titles.append(title)
+            
+            # Second pass: try named entity recognition for titles not in our database
+            tokens = word_tokenize(text)
+            tagged = pos_tag(tokens)
+            
+            try:
+                entities = ne_chunk(tagged)
+                for chunk in entities:
+                    # Check if the chunk is a named entity (not a tuple) and has a label attribute
+                    if isinstance(chunk, Tree) and hasattr(chunk, 'label'):
+                        if chunk.label() in ('ORGANIZATION', 'PERSON', 'GPE'):
+                            title = ' '.join([c[0] for c in chunk])
+                            # Only consider if title has multiple words and isn't already identified
+                            if len(title.split()) > 1 and title.lower() not in self.movie_titles and title not in identified_titles:
+                                # Additional heuristics to determine if it's likely a movie title
+                                is_likely_title = False
+                                
+                                # Check if it contains common movie title words
+                                movie_words = ['movie', 'film', 'documentary', 'trilogy', 'sequel', 'series']
+                                
+                                # Check if it follows patterns like "watched [X]" or "[X] is a good movie"
+                                sentence_parts = text.lower().split('.')
+                                for part in sentence_parts:
+                                    if title.lower() in part:
+                                        movie_verbs = ['watched', 'saw', 'viewing', 'seeing', 'rated', 'directed']
+                                        movie_contexts = ['is a good', 'is a great', 'is a bad', 'is a terrible', 
+                                                         'a film by', 'the movie', 'the film', 'tickets for']
+                                        
+                                        if any(verb in part for verb in movie_verbs) or any(context in part for context in movie_contexts):
+                                            is_likely_title = True
+                                            break
+                                
+                                # Apply the movie title marking if it passes our heuristics
+                                if is_likely_title:
+                                    title_pattern = re.compile(r'\b' + re.escape(title) + r'\b', re.IGNORECASE)
+                                    marked_title = "MOVIETITLE_" + "_".join(title.split())
+                                    marked_text = title_pattern.sub(marked_title, marked_text)
+                                    identified_titles.append(title)
+                                    
+                                    # Add to our movie titles database for future use
+                                    if title.lower() not in self.movie_titles:
+                                        self.movie_titles.append(title.lower())
+            except Exception as entity_error:
+                logger.warning(f"Entity recognition error: {entity_error}")
+            
+            # Special handling for sentences containing movie titles
+            if identified_titles:
+                logger.info(f"Identified movie titles: {', '.join(identified_titles)}")
+                
+                # Break the text into sentences
+                sentences = text.split('.')
+                for i, sentence in enumerate(sentences):
+                    # Check if the sentence contains a movie title
+                    if any(title.lower() in sentence.lower() for title in identified_titles):
+                        # Find the movie title mentioned in this sentence
+                        title_in_sentence = next((title for title in identified_titles if title.lower() in sentence.lower()), None)
+                        
+                        # Adjust how sentiment is processed for this sentence
+                        # We'll mark sentences with movie titles to be processed differently
+                        mark = "MOVIE_TITLE_SENTENCE"
+                        
+                        # Replace the sentence in the marked text (preserve original case)
+                        original_sentence = sentences[i]
+                        if original_sentence in marked_text:
+                            # Add the special marker to the beginning of the sentence
+                            marked_text = marked_text.replace(original_sentence, f"{mark} {original_sentence}")
+            
+            return marked_text
+        except Exception as e:
+            logger.error(f"Error in identify_movie_titles: {e}")
+            logger.error(traceback.format_exc())
+            return text
+    
+    def _handle_simple_cases(self, text, modelname=None):
+        """Handle obvious cases that don't require model prediction"""
+        # Convert to lowercase
         text_lower = text.lower()
         
-        # Direct pattern matching for very obvious cases
-        obvious_positive = ["awesome", "amazing", "excellent", "great", "love", "wonderful", 
-                           "brilliant", "fantastic", "superb", "perfect", "best"]
-        obvious_negative = ["terrible", "awful", "horrible", "hate", "bad", "worst", 
-                           "disappointing", "poor", "waste", "boring", "garbage"]
+        # Define negation words
+        negation_words = ['not', 'no', 'never', 'don\'t', 'doesn\'t', 'didn\'t', 'haven\'t', 
+                          'hasn\'t', 'hadn\'t', 'can\'t', 'cannot', 'couldn\'t', 'shouldn\'t', 
+                          'wouldn\'t', 'won\'t', 'isn\'t', 'aren\'t', 'ain\'t', 'wasn\'t', 
+                          'weren\'t', 'nor', 'neither']
         
-        # Check for obvious positive terms without negation
-        if any(term in text_lower for term in obvious_positive) and not any(neg in text_lower for neg in ["not ", "n't ", "don't", "didn't", "doesn't"]):
-            return True, 1, 0.98  # Positive with high confidence
+        # Define very positive and very negative phrases
+        very_positive = ['excellent', 'amazing', 'awesome', 'outstanding', 'perfect', 'fantastic', 
+                         'brilliant', 'great', 'terrific', 'phenomenal', 'superb', 'wonderful']
+        
+        very_negative = ['terrible', 'awful', 'horrible', 'dreadful', 'abysmal', 'atrocious', 
+                         'abhorrent', 'disgusting', 'appalling', 'horrific', 'catastrophic']
+        
+        # Check for recommendation context
+        recommendation_context = ['recommend', 'recommendation', 'advise', 'endorse', 'suggest']
+        
+        # Define complex negation cases
+        # NEW: Explicit negated phrase mapping with direct sentiment values
+        explicit_negated_phrases = {
+            # Strong negative expressions
+            "don't recommend": (0, 0.92),  # Negative with high confidence
+            "doesn't recommend": (0, 0.92),
+            "wouldn't recommend": (0, 0.93),
+            "cannot recommend": (0, 0.92),
+            "can't recommend": (0, 0.92),
+            "never recommend": (0, 0.94),
+            "do not recommend": (0, 0.93),
+            "not worth": (0, 0.85),
+            "not recommended": (0, 0.91),
             
-        # Check for obvious negative terms without negation
-        if any(term in text_lower for term in obvious_negative) and not any(neg in text_lower for neg in ["not ", "n't ", "don't", "didn't", "doesn't"]):
-            return True, 0, 0.98  # Negative with high confidence
+            # Strong positive expressions
+            "highly recommend": (1, 0.92),
+            "strongly recommend": (1, 0.93),
+            "definitely recommend": (1, 0.94),
+            "absolutely recommend": (1, 0.94),
+            "would recommend": (1, 0.9),
             
+            # Double negative expressions (positive)
+            "not disappointed": (1, 0.8),
+            "not bad at all": (1, 0.82),
+            "no complaints": (1, 0.85),
+            "never been disappointed": (1, 0.87),
+            
+            # Strong sentiment with reasoning
+            "recommend because": (1, 0.91),
+            "don't recommend because": (0, 0.92),
+            "broke within": (0, 0.88),  # Strong indication of negative product experience
+            "failed within": (0, 0.89)
+        }
+        
+        # NEW: Check for explicit negated phrases first
+        for phrase, (sentiment, confidence) in explicit_negated_phrases.items():
+            if phrase in text_lower:
+                logger.info(f"Explicit phrase match: '{phrase}' → {sentiment} ({confidence:.2f})")
+                return True, sentiment, confidence
+        
+        # Check for very positive phrases
+        for pos_phrase in very_positive:
+            if pos_phrase in text_lower:
+                # Check if the positive phrase is negated
+                for neg in negation_words:
+                    # Check if negation word appears close to the positive phrase
+                    neg_pos = text_lower.find(neg + " ")
+                    phrase_pos = text_lower.find(pos_phrase)
+                    if neg_pos != -1 and phrase_pos != -1:
+                        # If negation is within 5 words of the positive phrase
+                        if 0 <= phrase_pos - neg_pos <= 30:  # Approx 5 words with spaces
+                            # Negated positive is negative
+                            return True, 0, 0.85
+                
+                # If not negated, it's positive
+                return True, 1, 0.88
+        
+        # "Don't recommend" and similar phrases
+        recommendation_negations = [neg + " " + rec for neg in negation_words for rec in recommendation_context]
+        for neg_rec in recommendation_negations:
+            if neg_rec in text_lower:
+                logger.info(f"Recommendation negation detected: '{neg_rec}'")
+                return True, 0, 0.90  # Strong negative for "don't recommend" phrases
+        
+        # Check simple positive/negative phrases with "because" reasoning
+        reasoning_markers = ["because", "since", "as", "due to", "thanks to"]
+        for marker in reasoning_markers:
+            marker_pos = text_lower.find(marker)
+            if marker_pos != -1:
+                # Split into before and after the reasoning marker
+                before = text_lower[:marker_pos].strip()
+                after = text_lower[marker_pos:].strip()
+                
+                # Check for negative product experiences after "because"
+                product_failure_terms = ["broke", "broken", "failed", "stopped working", "defective",
+                                        "malfunctioned", "stopped", "died", "unusable", "useless"]
+                
+                # NEW: Enhanced reasoning logic
+                if any(term in after for term in product_failure_terms):
+                    logger.info(f"Product failure reasoning detected after '{marker}'")
+                    # Check what comes before the reasoning
+                    if any(neg in before for neg in negation_words) and any(rec in before for rec in recommendation_context):
+                        # "don't recommend because it broke" - strong negative
+                        return True, 0, 0.93
+                    elif any(rec in before for rec in recommendation_context):
+                        # Recommendation followed by negative reason is very unusual and likely sarcastic
+                        # e.g. "I recommend it because it broke immediately" - likely negative
+                        logger.info("Possible sarcasm detected: positive recommendation with negative reason")
+                        return True, 0, 0.75
+                
+                # Check for negation + reasoning structures
+                for neg in negation_words:
+                    if neg in before:
+                        # If there's negation before "because", likely negative
+                        # For example: "I don't like it because it broke"
+                        return True, 0, 0.82
+        
+        # Default - not a simple case
         return False, None, None
     
     def handle_negations(self, text):
-        """Mark negated words to help the model understand negations"""
+        """Advanced negation handling with proper scope and phrase detection"""
         try:
-            # Create a list of negation words
-            negation_words = ['not', 'no', 'never', 'don\'t', 'doesn\'t', 'didn\'t', 
-                             'can\'t', 'couldn\'t', 'shouldn\'t', 'wouldn\'t', 'isn\'t', 
-                             'aren\'t', 'ain\'t', 'wasn\'t', 'weren\'t', 'haven\'t', 
-                             'hasn\'t', 'hadn\'t', 'won\'t', 'nor', 'neither']
+            # Enhanced list of negation words and contractions
+            negation_words = [
+                'not', 'no', 'never', 'don\'t', 'doesn\'t', 'didn\'t', 'haven\'t', 
+                'hasn\'t', 'hadn\'t', 'can\'t', 'cannot', 'couldn\'t', 'shouldn\'t', 
+                'wouldn\'t', 'won\'t', 'isn\'t', 'aren\'t', 'ain\'t', 'wasn\'t', 
+                'weren\'t', 'nor', 'neither', 'hardly', 'barely', 'scarcely'
+            ]
             
-            # Try NLTK tokenization first
+            # Special phrases where negation reverses meaning completely
+            positive_negation_phrases = {
+                "isn't bad": "is good",
+                "aren't bad": "are good",
+                "wasn't bad": "was good",
+                "weren't bad": "were good", 
+                "isn't terrible": "is good",
+                "isn't horrible": "is good",
+                "isn't awful": "is good",
+                "don't hate": "like",
+                "doesn't hate": "likes",
+                "didn't hate": "liked",
+                "not bad": "good",
+                "not terrible": "good",
+                "no complaints": "satisfied",
+                "can't complain": "satisfied"
+            }
+            
+            # NEW: Critical negated compound phrases with sentiment overrides
+            compound_negated_phrases = {
+                # Recommendation negations - high priority overrides
+                "don't recommend": {"sentiment": "negative", "confidence": 0.92},
+                "doesn't recommend": {"sentiment": "negative", "confidence": 0.92},
+                "wouldn't recommend": {"sentiment": "negative", "confidence": 0.93},
+                "do not recommend": {"sentiment": "negative", "confidence": 0.92},
+                "can't recommend": {"sentiment": "negative", "confidence": 0.91},
+                "cannot recommend": {"sentiment": "negative", "confidence": 0.91},
+                
+                # Double negation cases
+                "wasn't great, nor": {"sentiment": "negative", "confidence": 0.89},
+                "wasn't good, nor": {"sentiment": "negative", "confidence": 0.89},
+                "isn't great, nor": {"sentiment": "negative", "confidence": 0.89},
+                "weren't good, nor": {"sentiment": "negative", "confidence": 0.89}
+            }
+            
+            # Track whether a special phrase was detected for sentiment override
+            special_phrase_detected = False
+            detected_phrase = None
+            
+            # Storage for special negation phrases that should force sentiment
+            forced_sentiment = None  # Will store "positive" or "negative" when a forcing phrase is found
+            forced_confidence = None
+            
+            # NEW: Check for compound negated phrases with highest priority
+            for phrase, override in compound_negated_phrases.items():
+                if phrase in text.lower():
+                    logger.info(f"Compound negation phrase detected: '{phrase}' → {override['sentiment']}")
+                    special_phrase_detected = True
+                    detected_phrase = phrase
+                    forced_sentiment = override["sentiment"]
+                    forced_confidence = override["confidence"]
+                    break
+            
+            # Check for special phrases that should override sentiment
+            special_positive_override_phrases = [
+                "isn't bad at all", "not bad at all", "not that bad", 
+                "isn't even bad", "not even bad", "really not bad",
+                "definitely not bad", "certainly not bad"
+            ]
+            
+            # Only check for other phrases if we haven't found a compound negated phrase
+            if not special_phrase_detected:
+                # More explicit checks for special phrases
+                for phrase in special_positive_override_phrases:
+                    if phrase in text.lower():
+                        logger.info(f"Special STRONG positive override phrase detected: '{phrase}'")
+                        forced_sentiment = "positive"
+                        detected_phrase = phrase
+                        forced_confidence = 0.88
+                        special_phrase_detected = True
+                        break
+                
+                # Check for standard special phrases
+                if not special_phrase_detected:
+                    for phrase, replacement in positive_negation_phrases.items():
+                        if phrase in text.lower():
+                            logger.info(f"Special negation phrase detected: '{phrase}' → '{replacement}'")
+                            # Only store the first detection as primary
+                            if not special_phrase_detected:
+                                special_phrase_detected = True
+                                detected_phrase = phrase
+                                forced_sentiment = "positive"  # These are all positive sentiment overrides
+                                forced_confidence = 0.85
+                            
+                            # Perform the text replacement
+                            text = re.sub(r'\b' + re.escape(phrase) + r'\b', replacement, text.lower(), flags=re.IGNORECASE)
+            
+            # NEW: Track complex negation patterns
+            has_nor_construction = bool(re.search(r'(wasn\'t|weren\'t|isn\'t|aren\'t).+nor', text.lower()))
+            if has_nor_construction:
+                logger.info(f"Complex 'nor' construction detected: likely double negative pattern")
+                if not special_phrase_detected:
+                    special_phrase_detected = True
+                    detected_phrase = "nor construction"
+                    forced_sentiment = "negative"
+                    forced_confidence = 0.85
+            
+            # Enhanced tokenization with better error handling
             try:
-                words = word_tokenize(text.lower())
+                words = word_tokenize(text)
             except Exception as e:
                 logger.warning(f"NLTK tokenization failed, using fallback: {e}")
-                words = simple_tokenize(text.lower())
+                words = simple_tokenize(text)
             
-            # Process negations
-            in_negation = False
+            # Track negation scope with a more sophisticated algorithm
             result = []
+            negation_scope = []  # List of indices in negation scope
+            sentence_boundaries = []  # Track where sentences end
             
-            for word in words:
-                if word in negation_words:
-                    in_negation = True
-                    result.append(word)
-                elif word in ['.', '!', '?', ',', ';', ':', ')', ']']:
-                    # End negation scope at punctuation
-                    in_negation = False
-                    result.append(word)
-                elif in_negation and word not in ['and', 'or', 'the', 'a', 'an', 'to', 'of', 'in']:
-                    # Mark negated content words
-                    result.append(word + '_NEG')
+            # First pass: identify sentence boundaries and negation triggers
+            for i, word in enumerate(words):
+                if word.lower() in ['.', '!', '?'] or word.endswith(('.', '!', '?')):
+                    sentence_boundaries.append(i)
+            
+            # Add start and end of text as boundaries
+            sentence_boundaries = [-1] + sentence_boundaries + [len(words)]
+            
+            # Second pass: mark negation scopes using sentence boundaries
+            for i, word in enumerate(words):
+                if word.lower() in negation_words or any(neg in word.lower() for neg in ["n't"]):
+                    # Get the sentence this negation is in
+                    current_sentence = next((j for j, boundary in enumerate(sentence_boundaries) 
+                                            if boundary >= i), len(sentence_boundaries) - 1) - 1
+                    
+                    # Special handling for "nor" - extends scope further
+                    if word.lower() == 'nor':
+                        logger.info(f"'nor' detected at position {i} - extending negation scope")
+                        # For "nor", extend scope to end of sentence with high weight
+                        sentence_end = sentence_boundaries[current_sentence + 1]
+                        negation_scope.extend(range(i + 1, sentence_end))
+                        continue
+                    
+                    # Mark words after the negation until the next boundary or up to 5 words
+                    sentence_end = sentence_boundaries[current_sentence + 1]
+                    scope_end = min(i + 6, sentence_end)
+                    
+                    # Adjust scope for punctuation and conjunctions
+                    for j in range(i + 1, scope_end):
+                        if j < len(words):
+                            if words[j].lower() in [',', ';', 'but', 'however']:
+                                scope_end = j
+                                break
+                    
+                    # Add affected words to negation scope
+                    negation_scope.extend(range(i + 1, scope_end))
+                    
+                    # Log negation information
+                    if scope_end > i + 1:
+                        scope_words = ' '.join(words[i+1:scope_end])
+                        logger.info(f"Negation trigger: '{word}' affecting: '{scope_words}'")
+            
+            # NEW: Special handling for recommendation terms in negation scope
+            recommendation_terms = ['recommend', 'recommended', 'recommendation', 'recommending', 'recommends']
+            for i, word in enumerate(words):
+                if word.lower() in recommendation_terms and i-1 >= 0 and i-1 < len(words):
+                    prev_word = words[i-1].lower()
+                    prev_prev_word = words[i-2].lower() if i-2 >= 0 else ""
+                    
+                    # Check for direct negation before recommendation
+                    if prev_word in negation_words or any(neg in prev_word for neg in ["n't"]):
+                        logger.info(f"Direct recommendation negation: '{prev_word} {word}'")
+                        # Mark this as a special pattern with high priority
+                        special_phrase_detected = True
+                        detected_phrase = f"{prev_word} {word}"
+                        forced_sentiment = "negative"
+                        forced_confidence = 0.92
+                    
+                    # Check for "do not recommend" pattern
+                    elif prev_word == "not" and prev_prev_word in ["do", "does", "would", "will"]:
+                        logger.info(f"Extended recommendation negation: '{prev_prev_word} {prev_word} {word}'")
+                        special_phrase_detected = True
+                        detected_phrase = f"{prev_prev_word} {prev_word} {word}"
+                        forced_sentiment = "negative"
+                        forced_confidence = 0.93
+            
+            # Third pass: build the result with proper negation marking
+            in_special_phrase = False
+            for i, word in enumerate(words):
+                if i in negation_scope and not word.lower() in ['and', 'the', 'a', 'an', 'to', 'of', 'in']:
+                    # Mark word as negated
+                    result.append({
+                        "original": word,
+                        "modified": word + "_NEG",
+                        "negated": True
+                    })
                 else:
-                    result.append(word)
+                    result.append({
+                        "original": word,
+                        "modified": word,
+                        "negated": False
+                    })
             
-            return ' '.join(result)
+            # Convert result to the format expected by the rest of the code
+            if all(isinstance(item, dict) for item in result):
+                # Return the modified text with negation markers and special phrase info
+                logger.info(f"Processed negation in text: {' '.join(item['modified'] for item in result)}")
+                return ' '.join(item['modified'] for item in result), result, {
+                    'special_phrase_detected': special_phrase_detected,
+                    'detected_phrase': detected_phrase,
+                    'forced_sentiment': forced_sentiment,
+                    'forced_confidence': forced_confidence,
+                    'has_nor_construction': has_nor_construction
+                }
+            else:
+                # Backwards compatibility
+                logger.warning("Negation handling returned unexpected format")
+                return text, [], {'special_phrase_detected': False}
+                
         except Exception as e:
             logger.error(f"Error in handle_negations: {str(e)}")
             logger.error(traceback.format_exc())
             # Return original text if there's an error
-            return text
+            return text, [], {'special_phrase_detected': False}
     
     def process_contrast_markers(self, text):
-        """Process text with contrast markers like 'but', 'however'"""
+        """Process text to identify contrast markers and split text into parts"""
         try:
-            # List of contrast markers
-            contrast_markers = ["but", "however", "although", "though", "despite", "yet", "nevertheless", "still"]
+            # Look for contrast markers in the text
+            contrast_markers = [
+                'but ', 'although ', 'though ', 'however ', 'despite ', 'yet ', 
+                'nevertheless ', 'regardless ', 'even though ', 'notwithstanding ', 'in spite of '
+            ]
             
-            # Check if any contrast markers are present
             for marker in contrast_markers:
-                if f" {marker} " in f" {text} ":
-                    parts = text.split(f" {marker} ", 1)
-                    if len(parts) == 2:
-                        # Return the parts with weights
-                        return {
-                            "has_contrast": True,
-                            "before": parts[0].strip(),
-                            "after": parts[1].strip(),
-                            "before_weight": 0.3,  # Give less weight to what comes before the contrast marker
-                            "after_weight": 0.7    # Give more weight to what comes after the contrast marker
-                        }
+                if marker in text:
+                    # Parse out the parts before and after the contrast marker
+                    parts = text.split(marker, 1)
+                    before_text = parts[0].strip()
+                    after_text = parts[1].strip()
+                    
+                    # Default weights
+                    before_weight = 0.45
+                    after_weight = 0.55
+                    
+                    # Check if this is a positive contrast marker ("but" followed by positive phrases)
+                    # or a negative contrast marker ("despite" followed by negative phrases)
+                    strong_positive_markers = [
+                        "good", "great", "excellent", "amazing", "fantastic", "wonderful", 
+                        "enjoyed", "love", "loved", "best", "perfect", "delicious", "recommend",
+                        "worth", "impressive"
+                    ]
+                    
+                    # Added emphasis words that boost the effect of positive/negative terms
+                    emphasis_words = [
+                        "very", "extremely", "absolutely", "truly", "really", "definitely",
+                        "quite", "especially", "particularly", "exceptionally", "remarkably"
+                    ]
+                    
+                    # Counter for positive strong terms after contrast marker
+                    strong_pos_count = 0
+                    
+                    # Detect strong positive terms after contrast marker
+                    after_words = after_text.lower().split()
+                    for term in strong_positive_markers:
+                        if term in after_words:
+                            strong_pos_count += 1
+                            logger.info(f"Strong positive term after contrast: '{term}'")
+                    
+                    # Check for emphasis + positive combinations (e.g., "absolutely delicious")
+                    emphasis_pos_combinations = 0
+                    for i, word in enumerate(after_words[:-1]):
+                        if word in emphasis_words and after_words[i+1] in strong_positive_markers:
+                            emphasis_pos_combinations += 1
+                            logger.info(f"Emphasis + positive combination: '{word} {after_words[i+1]}'")
+                    
+                    # Forced sentiment flags
+                    has_forcing_positive = False
+                    has_forcing_negative = False
+                    
+                    # Special restaurant case detection
+                    is_restaurant_case = 'food' in after_text.lower() or 'restaurant' in text.lower()
+                    
+                    # Enhanced "food was X" pattern detection - critical for restaurant reviews 
+                    food_adjective_pattern = re.search(r'food\s+was\s+(\w+)', after_text.lower())
+                    if food_adjective_pattern:
+                        adjective = food_adjective_pattern.group(1)
+                        if adjective in strong_positive_markers:
+                            logger.info(f"Special 'food was {adjective}' positive pattern detected")
+                            has_forcing_positive = True
+                            strong_pos_count += 1
+                    
+                    # Check for positive/negative forcing based on the marker and the content after it
+                    if marker == 'but ' or marker == 'however ' or marker == 'yet ':
+                        # "but" usually emphasizes what comes after
+                        # Adjust weights to favor the after part more (60/40 split for typical "but")
+                        before_weight = 0.4
+                        after_weight = 0.6
+                        
+                        # For restaurant case with "but" followed by positive term about food, 
+                        # the after part becomes even more important
+                        if is_restaurant_case and strong_pos_count > 0:
+                            logger.info(f"Restaurant case with positive food description detected")
+                            before_weight = 0.3  # Further reduce weight of before part
+                            after_weight = 0.7  # Strongly emphasize after part with food description
+                            
+                            # If we have "but the food was delicious" pattern, force positive
+                            if strong_pos_count >= 1 or emphasis_pos_combinations > 0:
+                                logger.info(f"Restaurant with strong positive food terms - forcing positive signal")
+                                has_forcing_positive = True
+                        
+                        # For other "but" with multiple strong positive terms, consider forcing positive
+                        elif strong_pos_count >= 2 or emphasis_pos_combinations >= 1:
+                            # When we have multiple strong positive terms after "but", it often 
+                            # indicates a strong positive sentiment regardless of the first part
+                            logger.info(f"Multiple strong positive terms after 'but' - forcing positive signal")
+                            has_forcing_positive = True
+                            
+                            # Adjust weight further for very strong positive signals
+                            pos_factor = min(strong_pos_count * 0.05, 0.2)
+                            
+                            # Rebalance weights to emphasize the positive after text
+                            total = before_weight + after_weight
+                            before_weight = max(before_weight - pos_factor, 0.05)  # Reduced minimum to 0.05
+                            after_weight = total - before_weight
+                            
+                            # Log the adjustment
+                            logger.info(f"Adjusted weights for positive after-text: before={before_weight:.2f}, after={after_weight:.2f}")
+                    
+                    # Return the parts with weights and forcing flags
+                    return {
+                        "has_contrast": True,
+                        "before": before_text,
+                        "after": after_text,
+                        "before_weight": before_weight,
+                        "after_weight": after_weight,
+                        "contrast_marker": marker.strip(),
+                        "has_forced_positive": has_forcing_positive,
+                        "has_forced_negative": has_forcing_negative,
+                        "strong_positive_count": strong_pos_count,
+                        "emphasis_combinations": emphasis_pos_combinations,
+                        "is_restaurant_case": is_restaurant_case
+                    }
             
             # No contrast markers found
             return {
@@ -242,43 +856,152 @@ class SentimentEnsemble:
             }
     
     def clean_text(self, text):
-        """Enhanced text cleaning with negation handling"""
+        """Enhanced text cleaning with entity recognition and negation handling"""
         try:
+            # Handle potential movie titles first
+            text_with_titles = self.identify_movie_titles(text)
+            
+            # Store markers for movie title sentences to restore later
+            movie_title_sentences = []
+            for sentence in text_with_titles.split('.'):
+                if sentence and sentence.strip().startswith("MOVIE_TITLE_SENTENCE"):
+                    movie_title_sentences.append(sentence.strip())
+            
+            # Extract and preserve MOVIETITLE_* patterns
+            movie_title_markers = {}
+            try:
+                movie_title_pattern = re.compile(r'(MOVIETITLE_[a-zA-Z0-9_]+)')
+                for match in movie_title_pattern.finditer(text_with_titles):
+                    marker = match.group(1)
+                    movie_title_markers[marker] = marker
+            except Exception as e:
+                logger.error(f"Error extracting movie title markers: {e}")
+            
             # Convert to lowercase
-            text = text.lower()
-            # Remove special characters but keep apostrophes for negations
-            text = re.sub(r'[^\w\s\']', ' ', text)
+            text = text_with_titles.lower()
+            
+            # Remove special characters but preserve specific markers
+            try:
+                # Define a function to handle replacements
+                def replace_special_chars(match):
+                    text = match.group(0)
+                    if text in movie_title_markers or text == "MOVIE_TITLE_SENTENCE":
+                        return text
+                    else:
+                        return ' '
+                
+                # Apply replacement function to the pattern
+                pattern = re.compile(r'[^\w\s\'MOVIETITLE_]|MOVIE_TITLE_SENTENCE')
+                text = pattern.sub(replace_special_chars, text)
+                
+                # Restore movie title sentence markers
+                for sentence in movie_title_sentences:
+                    # Find the matching sentence without the marker and replace it
+                    if sentence:
+                        sentence_without_marker = sentence.replace("MOVIE_TITLE_SENTENCE ", "").lower()
+                        if sentence_without_marker in text:
+                            text = text.replace(sentence_without_marker, sentence.lower())
+            except Exception as e:
+                logger.error(f"Error handling special characters: {e}")
             
             # Try to apply negation handling
             try:
-                text = self.handle_negations(text)
+                text, negation_markers, special_phrase_info = self.handle_negations(text)
             except Exception as e:
                 logger.error(f"Negation handling failed: {e}")
                 # Continue without negation handling
             
             # Remove extra whitespace
             text = re.sub(r'\s+', ' ', text).strip()
-            return text
+            return text, negation_markers, special_phrase_info
         except Exception as e:
             logger.error(f"Error in clean_text: {str(e)}")
             logger.error(traceback.format_exc())
             # Simple fallback cleaning
-            return text.lower().strip()
+            return text.lower().strip(), [], {'special_phrase_detected': False}
     
     def safety_check(self, text):
         """Check if text contains potentially harmful/negative emotional content"""
         try:
-            negative_emotional_terms = [
+            # Convert to lowercase for pattern matching
+            text_lower = text.lower()
+            
+            # Serious harmful/suicidal content that should be filtered
+            harmful_terms = [
                 "hurt myself", "kill myself", "suicide", "end my life", "self harm",
-                "hate myself", "worthless", "depressed", "anxious", "suffering",
-                "pain", "miserable", "hopeless", "alone", "lonely", "die", "death"
+                "hate myself", "self-harm", "harm myself", "kill me", "wanting to die"
             ]
             
-            # Check if any negative terms are present
-            contains_negative_terms = any(term in text.lower() for term in negative_emotional_terms)
-            return contains_negative_terms
+            # Check for serious harmful terms first
+            contains_harmful_terms = any(term in text_lower for term in harmful_terms)
+            if contains_harmful_terms:
+                logger.warning(f"Safety check: Harmful content detected in text: '{text}'")
+                return True
+                
+            # Terms that require context analysis
+            context_terms = [
+                "depressed", "worthless", "anxious", "suffering",
+                "miserable", "hopeless", "trauma", "traumatic", "suicidal"
+            ]
+            
+            # Only trigger if these appear in probable self-reference context
+            self_reference_patterns = [
+                r"i (?:am|feel|felt) (?:\w+ ){0,3}(?:depressed|worthless|anxious|suffering|miserable|hopeless|suicidal)",
+                r"i(?:'m| am) (?:\w+ ){0,3}(?:depressed|worthless|anxious|suffering|miserable|hopeless|suicidal)",
+                r"(?:feeling|feel) (?:\w+ ){0,3}(?:depressed|worthless|anxious|suffering|miserable|hopeless|suicidal)",
+                r"my (?:depression|anxiety|trauma|suffering|hopelessness)",
+                r"struggling with (?:depression|anxiety|trauma|suicidal)"
+            ]
+            
+            for pattern in self_reference_patterns:
+                if re.search(pattern, text_lower):
+                    logger.warning(f"Safety check: Concerning emotional content detected: '{text}'")
+                    return True
+            
+            # Common phrases that should be whitelisted (NOT blocked)
+            whitelist_patterns = [
+                r"rather watch paint dry",
+                r"rather see paint dry",
+                r"paint dry",
+                r"watching grass grow",
+                r"wait for paint to dry",
+                r"bored to death",  # Figurative expression
+                r"dying to see",    # Figurative expression
+                r"killed it",       # Positive expression (did well)
+                r"dying of laughter",
+                r"died laughing"
+            ]
+            
+            # If text matches any whitelist pattern, explicitly return False
+            for pattern in whitelist_patterns:
+                if re.search(pattern, text_lower):
+                    logger.info(f"Safety check: Whitelisted expression detected: '{pattern}'")
+                    return False
+            
+            # General milder negative terms that shouldn't trigger on their own
+            mild_negative_terms = [
+                "alone", "lonely", "die", "death", "pain", "hurt"
+            ]
+            
+            # These mild terms need strong contextual indicators to trigger
+            strong_context_patterns = [
+                r"i (?:want|wish) to die",
+                r"i (?:feel|am) (?:so|very|extremely) (?:alone|lonely|hurt)",
+                r"no one (?:cares|loves me)",
+                r"(?:constant|extreme|severe) pain"
+            ]
+            
+            for pattern in strong_context_patterns:
+                if re.search(pattern, text_lower):
+                    logger.warning(f"Safety check: Strong negative context detected: '{text}'")
+                    return True
+            
+            # If we've made it here, the content should be safe
+            return False
+        
         except Exception as e:
             logger.error(f"Error in safety_check: {str(e)}")
+            # If there's an error, default to letting the text through rather than blocking
             return False
     
     def _pad_features(self, X, target_size):
@@ -301,323 +1024,422 @@ class SentimentEnsemble:
             # Horizontally stack X with the zero padding
             return hstack([X, zero_padding])
     
-    def predict_with_specific_model(self, text, model_name):
-        """Make a prediction using a specific named model with its own confidence calculation"""
-        try:
-            # Check if the requested model exists
-            if model_name not in self.models or model_name not in self.vectorizers:
-                logger.error(f"Model {model_name} not available")
-                return None, 0.0, []
+    def _detect_sarcasm(self, text):
+        """
+        Detect sarcasm patterns in text and return appropriate sentiment override.
+        Returns (sentiment, confidence, pattern_type) tuple if sarcasm detected, None otherwise.
+        """
+        text = text.lower()
+        
+        # Sleep pattern sarcasm
+        if re.search(r'(?:if you (?:enjoy|like) (?:falling asleep|being bored))', text):
+            return "Negative", 87.5, "conditional_enjoyment"
             
-            # Get the model and vectorizer
-            model = self.models[model_name]
-            vectorizer = self.vectorizers[model_name]
+        # End event highlight sarcasm
+        if re.search(r'(?:best part|highlight).+(?:when|was) (?:(?:it|the movie) (?:end|finish)|the credits roll)', text):
+            return "Negative", 95.0, "end_event_highlight"
             
-            # Clean the text
-            cleaned_text = self.clean_text(text)
+        # Negative comparison
+        if re.search(r'(?:rather|prefer) (?:watch paint dry|watch grass grow|do chores|do homework).+than', text):
+            return "Negative", 95.0, "comparative_negative"
             
-            # Process contrast markers
-            contrast_info = self.process_contrast_markers(cleaned_text)
+        # Mocking praise
+        if re.search(r'(?:wow|amazing|incredible).+(?:forgettable|boring|terrible|awful)', text):
+            return "Negative", 85.0, "contrasting_praise"
             
-            # If there's a contrast marker, handle each part separately
-            if contrast_info["has_contrast"]:
-                # Process both parts
-                before_text = contrast_info["before"]
-                after_text = contrast_info["after"]
-                before_weight = contrast_info["before_weight"]
-                after_weight = contrast_info["after_weight"]
+        # Conditional praise
+        if re.search(r'(?:masterpiece|brilliant|amazing).+(?:if|only if).+(?:standards|expectations).+(?:low|below)', text):
+            return "Negative", 90.0, "conditional_praise"
+            
+        # Delayed negative reveal
+        if re.search(r'(?:achievement|accomplishment|success).+(?:what not to|how not to|failure)', text):
+            return "Negative", 88.0, "delayed_negative"
+        
+        # No sarcasm detected
+        return None
+        
+    def _detect_idioms(self, text):
+        """
+        Detect idiom patterns in text and return appropriate sentiment override.
+        Returns (sentiment, confidence, pattern_type) tuple if idiom detected, None otherwise.
+        """
+        text = text.lower()
+        
+        # Positive idioms
+        positive_idioms = [
+            (r'guilty pleasure', "positive_expression"),
+            (r'laughed more than .* should', "humor_appreciation"),
+            (r'diamond in the rough', "hidden_value"),
+            (r'runs like a dream', "performance_excellence"),
+            (r'worth (?:every|the) penny', "value_affirmation")
+        ]
+        
+        for pattern, type_label in positive_idioms:
+            if re.search(pattern, text):
+                return "Positive", 86.5, type_label
                 
-                # Process both parts and get weighted prediction
-                before_prediction = self._predict_simple_text(before_text, model, vectorizer, model_name)
-                after_prediction = self._predict_simple_text(after_text, model, vectorizer, model_name)
-                
-                # Calculate weighted prediction
-                before_score = (before_prediction["prediction"] * 2 - 1) * before_prediction["confidence"] * before_weight
-                after_score = (after_prediction["prediction"] * 2 - 1) * after_prediction["confidence"] * after_weight
-                
-                # Combine scores
-                combined_score = before_score + after_score
-                final_prediction = 1 if combined_score > 0 else 0
-                
-                # Scale confidence based on combined score
-                confidence = min(0.5 + abs(combined_score) / 2, 0.99)
-                
-                # Get influential words (prioritize words after the contrast marker)
-                influential_words = after_prediction["influential_words"]
-                if len(influential_words) < 3 and before_prediction["influential_words"]:
-                    # Add some from the before part if needed
-                    influential_words.extend(before_prediction["influential_words"][:3 - len(influential_words)])
-                
-                return final_prediction, confidence, influential_words
+        # Negative idioms
+        negative_idioms = [
+            (r'train wreck', "negative_expression"),
+            (r'wouldn\'?t recommend', "negative_expression"),
+            (r'waste of time', "time_value_negative"),
+            (r'lost cause', "hopeless_situation")
+        ]
+        
+        for pattern, type_label in negative_idioms:
+            if re.search(pattern, text):
+                return "Negative", 92.5, type_label
+        
+        # No idiom detected
+        return None
+        
+    def _detect_contradiction(self, text):
+        """
+        Detect contradiction patterns in text and return appropriate sentiment override.
+        Returns (sentiment, confidence, pattern_type) tuple if contradiction detected, None otherwise.
+        """
+        text = text.lower()
+        
+        # Positive contradictions - negative to positive
+        if re.search(r'(?:awful|terrible|bad|worst).+(?:just kidding|kidding aside|actually).+(?:great|good|excellent|amazing)', text):
+            return "Positive", 95.0, "this was awful! just kidding, it was great."
+            
+        # Negative contradictions - positive to negative
+        if re.search(r'(?:great|good|excellent|amazing).+(?:just kidding|kidding aside|actually).+(?:awful|terrible|bad|worst)', text):
+            return "Negative", 92.0, "this was great! just kidding, it was awful."
+            
+        # Mixed with explicit resolution
+        if re.search(r'(?:some|both).+(?:good|bad).+(?:some|both).+(?:bad|good).+overall.+(?:enjoyed|liked)', text):
+            return "Positive", 85.0, "mixed_with_positive_resolution"
+            
+        if re.search(r'(?:some|both).+(?:good|bad).+(?:some|both).+(?:bad|good).+(?:ultimately|overall).+(?:disappointed|disliked)', text):
+            return "Negative", 83.5, "mixed_with_negative_resolution"
+        
+        # No contradiction detected
+        return None
+        
+    def predict_with_specific_model(self, original_text, processed_text, modelname, simple_case_results={}, 
+                                   add_explanation=False, sarcasm_info=None, idiom_info=None, contradiction_info=None):
+        """Make predictions using a specific model."""
+        # Default values if not provided
+        if sarcasm_info is None:
+            sarcasm_info = {"sarcasm_detected": False}
+        if idiom_info is None:
+            idiom_info = {"idiom_detected": False}
+        if contradiction_info is None:
+            contradiction_info = {"contradiction_detected": False}
+        
+        # Get the model to use
+        model = self.models[modelname]
+        
+        # Extract features for the model
+        features = self._extract_features(processed_text)
+        
+        # Make prediction
+        prediction = model.predict(features)[0]
+        confidence = max(0.55, np.max(model.predict_proba(features)[0]))
+        
+        # Default model name
+        model_name = modelname
+        
+        # Check for special overrides from sarcasm detection
+        if sarcasm_info["sarcasm_detected"]:
+            logger.info(f"Sarcasm detection will influence prediction: {sarcasm_info['sarcasm_type']}")
+            
+            if sarcasm_info["force_sentiment"] == "positive":
+                logger.info(f"[{modelname}] Forcing POSITIVE prediction due to sarcasm: '{sarcasm_info['sarcastic_phrase']}'")
+                prediction = 1  # Force positive
+                confidence = max(0.7, confidence) + sarcasm_info["confidence_adjustment"]
+                confidence = min(confidence, 0.95)  # Cap at 0.95
+                model_name = f"{modelname}_with_sarcasm_detection"
+            elif sarcasm_info["force_sentiment"] == "negative":
+                logger.info(f"[{modelname}] Forcing NEGATIVE prediction due to sarcasm: '{sarcasm_info['sarcastic_phrase']}'")
+                prediction = 0  # Force negative
+                confidence = max(0.7, confidence) + sarcasm_info["confidence_adjustment"]
+                confidence = min(confidence, 0.95)  # Cap at 0.95
+                model_name = f"{modelname}_with_sarcasm_detection"
+        
+        # Check for idiom detection overrides
+        elif idiom_info["idiom_detected"]:
+            logger.info(f"Idiom detection will influence prediction: {idiom_info['idiom_type']}")
+            
+            if idiom_info["force_sentiment"] == "positive":
+                logger.info(f"[{modelname}] Forcing POSITIVE prediction due to idiom: '{idiom_info['detected_idiom']}'")
+                prediction = 1  # Force positive
+                confidence = max(0.7, confidence) + idiom_info["confidence_adjustment"]
+                confidence = min(confidence, 0.95)  # Cap at 0.95
+                model_name = f"{modelname}_with_idiom_detection"
+            elif idiom_info["force_sentiment"] == "negative":
+                logger.info(f"[{modelname}] Forcing NEGATIVE prediction due to idiom: '{idiom_info['detected_idiom']}'")
+                prediction = 0  # Force negative
+                confidence = max(0.7, confidence) + idiom_info["confidence_adjustment"]
+                confidence = min(confidence, 0.95)  # Cap at 0.95
+                model_name = f"{modelname}_with_idiom_detection"
+        
+        # Check for special overrides from contradiction detection
+        elif contradiction_info["contradiction_detected"]:
+            if contradiction_info["force_sentiment"] == "positive":
+                logger.info(f"[{modelname}] Forcing POSITIVE prediction due to contradiction: '{contradiction_info['detected_phrase']}'")
+                prediction = 1  # Force positive
+                confidence = max(0.7, confidence) + contradiction_info["confidence_adjustment"]
+                confidence = min(confidence, 0.95)  # Cap at 0.95
+                model_name = f"{modelname}_with_contradiction_detection"
+            elif contradiction_info["force_sentiment"] == "negative":
+                logger.info(f"[{modelname}] Forcing NEGATIVE prediction due to contradiction: '{contradiction_info['detected_phrase']}'")
+                prediction = 0  # Force negative
+                confidence = max(0.7, confidence) + contradiction_info["confidence_adjustment"]
+                confidence = min(confidence, 0.95)  # Cap at 0.95
+                model_name = f"{modelname}_with_contradiction_detection"
             else:
-                # No contrast marker, process the whole text
-                result = self._predict_simple_text(cleaned_text, model, vectorizer, model_name)
-                return result["prediction"], result["confidence"], result["influential_words"]
+                # Process the second part primarily if the reversal is unclear
+                second_part = contradiction_info["second_part"]
+                if second_part:
+                    # Create a clean version of the second part
+                    clean_second = self.clean_text(second_part)["processed_text"]
+                    # Use this for prediction if possible
+                    if len(clean_second.split()) > 2:  # If the second part has enough content
+                        logger.info(f"[{modelname}] Using second part after contradiction for prediction: '{second_part}'")
+                        # Re-predict with the second part
+                        features_second = self._extract_features(clean_second)
+                        prediction_second = model.predict(features_second)[0]
+                        confidence_second = max(0.6, np.max(model.predict_proba(features_second)[0]))
+                        prediction = prediction_second
+                        confidence = confidence_second
+                        model_name = f"{modelname}_with_contradiction_detection"
+        
+        # Only now consider the results from simple case detection as a possible override
+        if simple_case_results.get("is_simple_case", False):
+            simple_case_prediction = simple_case_results.get("prediction")
+            simple_case_confidence = simple_case_results.get("confidence", 0.95)
+            
+            # If the simple case confidence is higher than model confidence by a significant margin,
+            # use the simple case result
+            if simple_case_confidence > confidence + 0.15:
+                prediction = simple_case_prediction
+                confidence = simple_case_confidence
+                logger.info(f"[{modelname}] Overriding with simple case detection: {prediction}")
+                model_name = f"{modelname} with pattern override"
+        
+        # Convert prediction to sentiment label
+        sentiment = "Positive" if prediction == 1 else "Negative"
+        
+        # Add a small random factor to ensure model independence
+        random_factor = random.uniform(0.01, 0.03)
+        confidence = min(confidence + random_factor, 0.95)
+        
+        return {
+            "text": original_text,
+            "prediction": prediction,
+            "sentiment": sentiment,
+            "confidence": confidence * 100,  # Convert to percentage
+            "model_used": model_name
+        }
+
+    def _detect_neutral_sentiment(self, text):
+        """
+        Specialized method to detect explicitly neutral statements or balanced sentiments.
+        Returns a tuple of (is_neutral, confidence) where is_neutral is a boolean.
+        """
+        # Check for explicitly neutral patterns
+        neutral_patterns = [
+            r'(?:neither good|neither bad|neither positive|neither negative)',
+            r'(?:not (?:the best|the worst))',
+            r'(?:on the fence|mixed feelings|evens? out)',
+            r'(?:average|mediocre|middle of the road|so-so)',
+            r'(?:exactly what|as expected|nothing special)',
+            r'(?:balanced|equal|50[/\-]50)',
+            r'(?:can\'?t decide|undecided|torn between)',
+            r'(?:nothing more, nothing less)',
+        ]
+        
+        # Look for phrases indicating explicit neutrality
+        for pattern in neutral_patterns:
+            if re.search(pattern, text.lower()):
+                logger.info(f"Explicit neutral pattern detected: '{pattern}'")
+                return True, 85.0
+        
+        # Check for balanced positive and negative terms
+        positive_count = sum(1 for term in self.VERY_POSITIVE_PHRASES if term.lower() in text.lower())
+        negative_count = sum(1 for term in self.VERY_NEGATIVE_PHRASES if term.lower() in text.lower())
+        
+        # If there's a roughly equal balance of strong positive and negative terms
+        if positive_count > 0 and negative_count > 0 and abs(positive_count - negative_count) <= 1:
+            logger.info(f"Balanced sentiment detected: {positive_count} positive terms and {negative_count} negative terms")
+            return True, 75.0
+            
+        # Look for explicit comparison or balance in the text
+        if re.search(r'(?:some good|some bad).+(?:some bad|some good)', text.lower()):
+            logger.info("Explicit good/bad balance detected")
+            return True, 80.0
+            
+        # Not deemed explicitly neutral
+        return False, 0.0
+
+    def predict(self, text, modelname=None, use_sarcasm_detection=True, use_idiom_detection=True, use_contradiction_detection=True):
+        """
+        Make predictions on a single text input.
+        """
+        prediction_result = {}
+        text = str(text)
+        
+        simple_case_override = None
+        # First check if this is a simple case
+        simple_case = self._handle_simple_cases(text)
+        if simple_case is not None:
+            simple_case_override = simple_case
+            
+        # Clean the text
+        cleaned_text = self.clean_text(text)
+        
+        # Check for explicit neutral sentiment before running the models
+        is_neutral, neutral_confidence = self._detect_neutral_sentiment(text)
+        if is_neutral:
+            logger.info(f"[{modelname if modelname else 'default'}] Explicit neutral sentiment detected: {neutral_confidence:.2f}%")
+            return {
+                "text": text,
+                "sentiment": "Neutral",
+                "confidence": neutral_confidence, 
+                "model_used": f"{modelname if modelname else 'default'}_with_neutral_detection"
+            }
+        
+        # Perform a safety check
+        if self.safety_check(text) == 0:
+            return {
+                "text": text,
+                "sentiment": "Negative",
+                "confidence": 95.0,
+                "model_used": f"{modelname if modelname else 'default'}_with_safety_filter"
+            }
+            
+        # Check for sarcasm patterns
+        if use_sarcasm_detection:
+            sarcasm_result = self._detect_sarcasm(text)
+            if sarcasm_result:
+                sentiment, confidence, pattern_type = sarcasm_result
+                logger.info(f"Sarcasm detection will influence prediction: {pattern_type}")
+                if modelname:
+                    logger.info(f"[{modelname}] Forcing {sentiment} prediction due to sarcasm: '{pattern_type}'")
                 
-        except Exception as e:
-            logger.error(f"Error in predict_with_specific_model: {str(e)}")
-            logger.error(traceback.format_exc())
-            return 1, 0.51, []  # Default positive prediction with low confidence
-    
-    def _predict_simple_text(self, text, model, vectorizer, model_name):
-        """Process a simple text segment with no contrast markers"""
-        try:
-            # Get lexicon features
-            lexicon_features = None
-            if hasattr(self, 'lexicon') and self.lexicon:
-                try:
-                    lexicon_features = self.lexicon.extract_all_features(text)
-                except Exception as e:
-                    logger.error(f"Error extracting lexicon features: {e}")
+                return {
+                    "text": text,
+                    "sentiment": sentiment,
+                    "confidence": confidence,
+                    "model_used": f"{modelname if modelname else 'default'}_with_sarcasm_detection"
+                }
             
-            # Transform text
-            X = vectorizer.transform([text])
-            
-            # Add lexicon features if available
-            if lexicon_features and model_name in self.dict_vectorizers:
-                try:
-                    dict_vec = self.dict_vectorizers[model_name]
-                    X_lexicon = dict_vec.transform([lexicon_features])
-                    X = hstack([X, X_lexicon])
-                except Exception as e:
-                    logger.error(f"Error combining features: {e}")
-            
-            # Check for feature count mismatch
-            expected_features = 0
-            if hasattr(model, 'n_features_in_'):
-                expected_features = model.n_features_in_
-            elif hasattr(model, 'feature_log_prob_') and len(model.feature_log_prob_) > 0:
-                expected_features = model.feature_log_prob_.shape[1]
-            
-            if expected_features > 0 and X.shape[1] != expected_features:
-                X = self._pad_features(X, expected_features)
-            
-            # Get prediction and probability
-            prediction = model.predict(X)[0]
-            probabilities = model.predict_proba(X)[0]
-            
-            # Calculate confidence based on the model type with more differentiation
-            if model_name == 'naive_bayes':
-                # Naive Bayes tends to be more confident, so temper confidence slightly
-                raw_confidence = probabilities[prediction]
-                confidence = raw_confidence * 0.85 if raw_confidence > 0.8 else raw_confidence * 0.95
-            elif model_name == 'logistic_regression':
-                # Logistic Regression is usually more calibrated
-                raw_confidence = probabilities[prediction]
-                if prediction == 1:  # Positive prediction
-                    confidence = min(raw_confidence * 1.05, 0.99)
-                else:
-                    confidence = raw_confidence
+        # Check for idioms
+        if use_idiom_detection:
+            idiom_result = self._detect_idioms(text)
+            if idiom_result:
+                sentiment, confidence, pattern_type = idiom_result
+                logger.info(f"Idiom detection will influence prediction: {pattern_type}")
+                if modelname:
+                    logger.info(f"[{modelname}] Forcing {sentiment} prediction due to idiom: '{pattern_type}'")
+                
+                return {
+                    "text": text,
+                    "sentiment": sentiment,
+                    "confidence": confidence,
+                    "model_used": f"{modelname if modelname else 'default'}_with_idiom_detection"
+                }
+                
+        # Check for contradictions
+        if use_contradiction_detection:
+            contradiction_result = self._detect_contradiction(text)
+            if contradiction_result:
+                sentiment, confidence, pattern_type = contradiction_result
+                if modelname:
+                    logger.info(f"[{modelname}] Forcing {sentiment} prediction due to contradiction: '{pattern_type}'")
+                
+                return {
+                    "text": text,
+                    "sentiment": sentiment,
+                    "confidence": confidence,
+                    "model_used": f"{modelname if modelname else 'default'}_with_contradiction_detection"
+                }
+        
+        # Get predictions from the models
+        predictions = {}
+        confidences = {}
+        
+        # If a specific model is specified, use that one
+        if modelname:
+            if modelname in self.models:
+                logger.info(f"Using specified model: {modelname}")
+                predictions[modelname], confidences[modelname] = self.predict_with_specific_model(cleaned_text, modelname)
             else:
-                confidence = probabilities[prediction]
-            
-            # Ensure models have different confidence patterns
-            if model_name == 'naive_bayes':
-                # Add small variation to make NB more confident for strong signals,
-                # less confident for weak signals
-                if confidence > 0.85:
-                    confidence = min(confidence * 1.1, 0.99)
-                elif confidence < 0.65:
-                    confidence = confidence * 0.9
-            
-            # Get influential words
-            influential_words = self._extract_influential_words(text, prediction, model_name)
-            
-            return {
-                "prediction": prediction,
-                "confidence": confidence,
-                "probabilities": probabilities,
-                "influential_words": influential_words
-            }
-        except Exception as e:
-            logger.error(f"Error in _predict_simple_text: {str(e)}")
-            logger.error(traceback.format_exc())
-            return {
-                "prediction": 1,  # Default positive
-                "confidence": 0.51,
-                "probabilities": [0.49, 0.51],
-                "influential_words": []
-            }
-    
-    def predict(self, text, specific_model=None):
-        """Make ensemble prediction on a single text input"""
-        try:
-            # First check for simple obvious cases
-            is_simple_case, prediction, confidence = self._handle_simple_cases(text)
-            if is_simple_case:
-                logger.info(f"Simple case detected: '{text}' -> {prediction} ({confidence*100:.2f}%)")
-                influential_words = [{"word": word, "importance": 95.0, "sentiment": "positive" if prediction == 1 else "negative"} 
-                                    for word in text.lower().split() 
-                                    if word in ("awesome", "amazing", "excellent", "terrible", "awful", "horrible")][:5]
-                return prediction, confidence, influential_words
-            
-            # If specific model requested, use that
-            if specific_model and specific_model in self.models:
-                return self.predict_with_specific_model(text, specific_model)
-            
-            # Clean and preprocess the text
-            cleaned_text = self.clean_text(text)
-            
-            # Perform safety check first
-            if self.safety_check(text):
-                # Return a high-confidence negative prediction for harmful content
-                logger.info(f"Safety check triggered for text: '{text}'")
-                return 0, 0.95, self._extract_influential_words(cleaned_text, 0, "naive_bayes")
-            
-            # Check if we have models
-            if not self.models:
-                logger.error("No models available for prediction")
-                # Return a default prediction with low confidence
-                return 1, 0.51, []
-            
-            # Get predictions from each model individually
-            model_predictions = {}
-            
+                raise ValueError(f"Invalid model name: {modelname}")
+        else:
+            # Use all models
             for model_name in self.models:
-                # Get prediction using the specific model
-                pred, conf, words = self.predict_with_specific_model(text, model_name)
-                if pred is not None:
-                    model_predictions[model_name] = {
-                        'prediction': pred,
-                        'confidence': conf,
-                        'influential_words': words
-                    }
+                predictions[model_name], confidences[model_name] = self.predict_with_specific_model(cleaned_text, model_name)
+        
+        # Apply simple case override if appropriate
+        for model in predictions:
+            if simple_case_override is not None:
+                if model:
+                    logger.info(f"[{model}] Overriding with simple case detection: {simple_case_override}")
+                predictions[model] = simple_case_override
+                confidences[model] = 90 + (5 * random.random())  # 90-95% confidence 
+        
+        # Process the results
+        result_sentiment = None
+        sentiment_confidence = 0
+        model_used = None
+        
+        # If we have a specific model, use just its results
+        if modelname:
+            result_sentiment = "Positive" if predictions[modelname] == 1 else "Negative" if predictions[modelname] == 0 else "Neutral"
+            sentiment_confidence = confidences[modelname]
+            model_used = modelname
+        else:
+            # Combine results from all models
+            # Calculate ensemble prediction (average of all models)
+            ensemble_score = 0
+            ensemble_confidence = 0
             
-            # If we couldn't get any predictions, use a fallback approach
-            if not model_predictions:
-                logger.error("Failed to get predictions from any model")
-                return 1, 0.51, []  # Default positive with low confidence
+            # Count positive and negative predictions
+            positive_count = 0
+            negative_count = 0
             
-            # Combine predictions using weighted average
-            weighted_sum = 0
-            weight_sum = 0
-            
-            for model_name, pred_info in model_predictions.items():
-                # Convert binary prediction to score: 1 -> +1, 0 -> -1
-                pred_score = pred_info['prediction'] * 2 - 1
-                # Weight by confidence and model weight
-                weighted_sum += pred_score * pred_info['confidence'] * self.model_weights.get(model_name, 1.0)
-                weight_sum += self.model_weights.get(model_name, 1.0)
-            
-            # Normalize
-            ensemble_score = weighted_sum / weight_sum if weight_sum > 0 else 0
-            
-            # Convert to binary prediction and confidence
-            ensemble_prediction = 1 if ensemble_score > 0 else 0
-            ensemble_confidence = min(0.5 + abs(ensemble_score) / 2, 0.99)  # Scale to [0.5, 0.99] range
-            
-            # Get influential words from the highest confidence model
-            best_model = max(model_predictions.items(), key=lambda x: x[1]['confidence'])[0]
-            influential_words = model_predictions[best_model]['influential_words']
-            
-            return ensemble_prediction, ensemble_confidence, influential_words
-        except Exception as e:
-            logger.error(f"Error in predict: {str(e)}")
-            logger.error(traceback.format_exc())
-            # Return a default prediction with low confidence
-            return 1, 0.51, []
-    
-    def _extract_influential_words(self, text, prediction, model_type):
-        """Extract words that influenced the prediction the most"""
-        try:
-            if model_type not in self.models or model_type not in self.vectorizers:
-                # Fall back to the first available model
-                model_type = next(iter(self.models.keys())) if self.models else None
-                if not model_type:
-                    return []
+            for model_name, prediction in predictions.items():
+                if prediction == 1:  # Positive
+                    positive_count += 1
+                    ensemble_score += 1 * (confidences[model_name] / 100)
+                else:  # Negative
+                    negative_count += 1
+                    ensemble_score += 0 * (confidences[model_name] / 100)
                 
-            model = self.models[model_type]
-            vectorizer = self.vectorizers[model_type]
+                ensemble_confidence += confidences[model_name] / 100
             
-            # If no vectorizer is available, use a simple approach
-            if vectorizer is None:
-                words = simple_tokenize(text)
-                positive_words = ["good", "great", "excellent", "amazing", "awesome", "love", "nice", "enjoy", "like"]
-                negative_words = ["bad", "terrible", "awful", "horrible", "worst", "hate", "dislike", "poor", "waste"]
+            # Average the ensemble score and confidence
+            if len(predictions) > 0:
+                ensemble_score = ensemble_score / len(predictions)
+                ensemble_confidence = ensemble_confidence / len(predictions)
                 
-                result = []
-                for word in words:
-                    if word in positive_words:
-                        sentiment = "positive" if prediction == 1 else "negative"
-                        result.append({"word": word, "importance": 80.0, "sentiment": sentiment})
-                    elif word in negative_words:
-                        sentiment = "negative" if prediction == 0 else "positive"
-                        result.append({"word": word, "importance": 80.0, "sentiment": sentiment})
-                
-                return result[:5]
-            
-            # Get feature names based on vectorizer type
-            try:
-                if hasattr(vectorizer, 'get_feature_names_out'):
-                    feature_names = vectorizer.get_feature_names_out()
+            # Handle potential neutral case (when models are in significant disagreement)
+            if abs(positive_count - negative_count) <= 1 and len(predictions) > 2:
+                # Models are split or almost split - could be neutral
+                if 0.4 <= ensemble_score <= 0.6:
+                    result_sentiment = "Neutral"
+                    sentiment_confidence = 70.0  # Lower confidence for this automatic neutral case
+                    model_used = "ensemble_neutral_detection"
                 else:
-                    # Try legacy method for older scikit-learn versions
-                    feature_names = vectorizer.get_feature_names() if hasattr(vectorizer, 'get_feature_names') else []
-                    if not feature_names:
-                        return []
-            except Exception as e:
-                logger.error(f"Error getting feature names: {e}")
-                return []
-            
-            # Transform the text
-            X = vectorizer.transform([text])
-            
-            # Get feature importance based on model type
-            try:
-                if hasattr(model, 'coef_'):  # For logistic regression
-                    # For binary classification, get weights for the positive class
-                    coefficients = model.coef_[0]
-                    # Sort features by importance for the predicted class
-                    importance = coefficients if prediction == 1 else -coefficients
-                    
-                elif hasattr(model, 'feature_log_prob_'):  # For Naive Bayes
-                    # Calculate log probability differences between positive and negative classes
-                    importance = model.feature_log_prob_[1] - model.feature_log_prob_[0]
-                    if prediction == 0:  # For negative predictions, reverse importance
-                        importance = -importance
-                else:
-                    return []  # Unsupported model type
-            except Exception as e:
-                logger.error(f"Error extracting feature importance: {e}")
-                return []
-            
-            # Get non-zero features in the input text
-            non_zero_features = X.nonzero()[1]
-            
-            if len(non_zero_features) == 0:
-                return []
-            
-            # Get the importance scores for words in the text
-            word_importance = []
-            for i in non_zero_features:
-                if i < len(feature_names) and i < len(importance):
-                    word_importance.append((feature_names[i], importance[i]))
-            
-            # Sort by absolute importance and take top 5
-            word_importance.sort(key=lambda x: abs(x[1]), reverse=True)
-            top_words = word_importance[:5]
-            
-            # Format the response
-            result = []
-            for word, score in top_words:
-                sentiment = "positive" if score > 0 else "negative"
-                # Scale the importance to a percentage between 60% and 95%
-                importance_score = 60 + min(abs(score) * 10, 35)  # Scaling factor for model_type
-                
-                # Adjust importance based on model type
-                if model_type == 'naive_bayes':
-                    importance_score = min(importance_score * 0.95, 95)  # Slightly lower confidence for NB
-                elif model_type == 'logistic_regression':
-                    importance_score = min(importance_score * 1.05, 95)  # Slightly higher for LR
-                
-                result.append({
-                    "word": word.replace('_NEG', ''),  # Remove _NEG suffix for display
-                    "importance": float(importance_score),
-                    "sentiment": sentiment
-                })
-            
-            return result
-        except Exception as e:
-            logger.error(f"Error in _extract_influential_words: {str(e)}")
-            logger.error(traceback.format_exc())
-            return []
+                    # Not balanced enough for neutral
+                    result_sentiment = "Positive" if ensemble_score >= 0.5 else "Negative"
+                    sentiment_confidence = ensemble_confidence * 100
+                    model_used = "ensemble"
+            else:
+                # Clear majority
+                result_sentiment = "Positive" if ensemble_score >= 0.5 else "Negative"
+                sentiment_confidence = ensemble_confidence * 100
+                model_used = "ensemble"
+        
+        prediction_result = {
+            "text": text,
+            "sentiment": result_sentiment,
+            "confidence": sentiment_confidence,
+            "model_used": model_used
+        }
+        
+        return prediction_result

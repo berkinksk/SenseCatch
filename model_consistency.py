@@ -51,89 +51,96 @@ def ensure_model_consistency():
     loaded_vectorizers = {}
     loaded_dict_vectorizers = {}
     
+    # Track whether each model is complete
+    complete_models = {model_name: False for model_name in models_to_check}
+    
     # Try to load existing models
-    for model_name, (path, fallback_model) in models_to_check.items():
-        try:
-            if os.path.exists(path):
-                with open(path, 'rb') as f:
-                    try:
-                        # Check if it's a tuple
-                        loaded = pickle.load(f)
-                        if isinstance(loaded, tuple):
-                            if len(loaded) == 3:
-                                model, vectorizer, dict_vec = loaded
-                                loaded_models[model_name] = model
-                                loaded_vectorizers[model_name] = vectorizer
-                                loaded_dict_vectorizers[model_name] = dict_vec
-                                logger.info(f"Loaded {model_name} with text and dict vectorizers")
-                            elif len(loaded) == 2:
-                                model, vectorizer = loaded
-                                loaded_models[model_name] = model
-                                loaded_vectorizers[model_name] = vectorizer
-                                logger.info(f"Loaded {model_name} with text vectorizer only")
-                            else:
-                                logger.warning(f"Unexpected tuple format for {model_name}")
-                        else:
-                            loaded_models[model_name] = loaded
-                            logger.info(f"Loaded {model_name} model only")
-                    except Exception as e:
-                        logger.error(f"Error unpacking {model_name}: {e}")
-        except Exception as e:
-            logger.error(f"Error loading {model_name}: {e}")
-    
-    # Try to load individual vectorizers
-    for name, path in [
-        ('count_vectorizer', 'models/count_vectorizer.pkl'),
-        ('tfidf_vectorizer', 'models/tfidf_vectorizer.pkl'),
-        ('dict_vectorizer', 'models/dict_vectorizer.pkl')
-    ]:
-        try:
-            if os.path.exists(path):
-                with open(path, 'rb') as f:
-                    vectorizer = pickle.load(f)
-                    if name == 'count_vectorizer' and 'naive_bayes' not in loaded_vectorizers:
-                        loaded_vectorizers['naive_bayes'] = vectorizer
-                    elif name == 'tfidf_vectorizer' and 'logistic_regression' not in loaded_vectorizers:
-                        loaded_vectorizers['logistic_regression'] = vectorizer
-                    elif name == 'dict_vectorizer':
-                        loaded_dict_vectorizers['naive_bayes'] = vectorizer
-                        loaded_dict_vectorizers['logistic_regression'] = vectorizer
-                    logger.info(f"Loaded {name} separately")
-        except Exception as e:
-            logger.error(f"Error loading {name}: {e}")
-    
-    # Check if we have complete models
-    complete_models = {}
-    for model_name in models_to_check:
-        has_model = model_name in loaded_models
-        has_vectorizer = model_name in loaded_vectorizers
-        has_dict_vectorizer = model_name in loaded_dict_vectorizers
+    for model_name, (model_path, default_model_class) in models_to_check.items():
+        has_model = False
+        has_vectorizer = False
+        has_dict_vectorizer = False
         
-        complete_models[model_name] = has_model and has_vectorizer
+        # Try to load model
+        if os.path.exists(model_path):
+            try:
+                with open(model_path, 'rb') as f:
+                    loaded_data = pickle.load(f)
+                    
+                    # Check if the model is in the old format (just the model)
+                    if not isinstance(loaded_data, tuple):
+                        loaded_models[model_name] = loaded_data
+                        has_model = True
+                        logger.info(f"Loaded {model_name} model (old format)")
+                    # Check if the model is in the newer format (model, vectorizer)
+                    elif len(loaded_data) == 2:
+                        model, vectorizer = loaded_data
+                        loaded_models[model_name] = model
+                        loaded_vectorizers[model_name] = vectorizer
+                        has_model = True
+                        has_vectorizer = True
+                        logger.info(f"Loaded {model_name} model and vectorizer")
+                    # Check if the model is in the newest format (model, vectorizer, dict_vectorizer)
+                    elif len(loaded_data) == 3:
+                        model, vectorizer, dict_vec = loaded_data
+                        loaded_models[model_name] = model
+                        loaded_vectorizers[model_name] = vectorizer
+                        loaded_dict_vectorizers[model_name] = dict_vec
+                        has_model = True
+                        has_vectorizer = True
+                        has_dict_vectorizer = True
+                        logger.info(f"Loaded {model_name} model, vectorizer, and dict_vectorizer")
+            except Exception as e:
+                logger.error(f"Error loading {model_name} model: {e}")
+        
+        # Update completeness status
+        complete_models[model_name] = has_model and has_vectorizer and has_dict_vectorizer
         logger.info(f"{model_name} completeness: Model={has_model}, Vectorizer={has_vectorizer}, DictVec={has_dict_vectorizer}")
     
-    # Create example data for fitting models if needed
-    if not all(complete_models.values()):
-        # Create simple example data
+    # Create sample data if needed
+    need_sample_data = not all(complete_models.values())
+    
+    if need_sample_data:
+        logger.info("Creating sample data for model training...")
+        
+        # Add some sample texts with varying sentiment
         texts = [
-            "this movie is awesome",
-            "terrible acting and boring plot",
-            "I loved this film so much",
-            "waste of time and money",
-            "a true masterpiece of cinema"
+            "This is an excellent product that exceeds expectations. I love it!",
+            "This is terrible and disappointing. I regret buying it.",
+            "I enjoyed this movie a lot, the acting was fantastic.",
+            "The service was awful and the staff was rude.",
+            "The experience was enjoyable overall with a few minor issues."
         ]
         
-        # Example dictionary features
+        # Add movie title test cases
+        movie_title_texts = [
+            "I watched The Godfather yesterday and loved it.",
+            "The Dark Knight is a fantastic movie with great acting.",
+            "Titanic is emotional but drags on too long.",
+            "Star Wars was amazing but the sequels were terrible.",
+            "I hated the story in Pulp Fiction but the direction was brilliant."
+        ]
+        
+        # Add the movie title examples to our texts
+        texts.extend(movie_title_texts)
+        
+        # Dictionary features for the texts (simplified)
         dict_features = [
-            {'vader_pos': 0.8, 'vader_neg': 0.1, 'custom_pos': 0.7, 'custom_neg': 0.1},
-            {'vader_pos': 0.1, 'vader_neg': 0.7, 'custom_pos': 0.2, 'custom_neg': 0.8},
             {'vader_pos': 0.9, 'vader_neg': 0.1, 'custom_pos': 0.8, 'custom_neg': 0.1},
             {'vader_pos': 0.2, 'vader_neg': 0.7, 'custom_pos': 0.1, 'custom_neg': 0.9},
-            {'vader_pos': 0.8, 'vader_neg': 0.1, 'custom_pos': 0.9, 'custom_neg': 0.0}
+            {'vader_pos': 0.8, 'vader_neg': 0.1, 'custom_pos': 0.9, 'custom_neg': 0.0},
+            {'vader_pos': 0.1, 'vader_neg': 0.8, 'custom_pos': 0.1, 'custom_neg': 0.8},
+            {'vader_pos': 0.6, 'vader_neg': 0.3, 'custom_pos': 0.7, 'custom_neg': 0.2},
+            
+            # Add dictionary features for movie title texts
+            {'vader_pos': 0.7, 'vader_neg': 0.2, 'custom_pos': 0.8, 'custom_neg': 0.1},
+            {'vader_pos': 0.8, 'vader_neg': 0.1, 'custom_pos': 0.9, 'custom_neg': 0.1},
+            {'vader_pos': 0.4, 'vader_neg': 0.5, 'custom_pos': 0.3, 'custom_neg': 0.6},
+            {'vader_pos': 0.5, 'vader_neg': 0.4, 'custom_pos': 0.6, 'custom_neg': 0.3},
+            {'vader_pos': 0.3, 'vader_neg': 0.6, 'custom_pos': 0.4, 'custom_neg': 0.5}
         ]
         
         # Create labels (1=positive, 0=negative)
-        labels = np.array([1, 0, 1, 0, 1])
+        labels = np.array([1, 0, 1, 0, 1, 1, 1, 0, 1, 0])
         
         # Create vectorizers if needed
         if 'naive_bayes' not in loaded_vectorizers:

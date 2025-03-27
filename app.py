@@ -28,6 +28,9 @@ try:
         nltk.download('stopwords', download_dir=nltk_data_path, quiet=True)
         nltk.download('vader_lexicon', download_dir=nltk_data_path, quiet=True)
         nltk.download('wordnet', download_dir=nltk_data_path, quiet=True)
+        nltk.download('averaged_perceptron_tagger', download_dir=nltk_data_path, quiet=True)
+        nltk.download('maxent_ne_chunker', download_dir=nltk_data_path, quiet=True)
+        nltk.download('words', download_dir=nltk_data_path, quiet=True)
         logger.info(f"NLTK resources downloaded successfully to {nltk_data_path}")
     except Exception as e:
         logger.error(f"Error downloading NLTK resources: {str(e)}")
@@ -89,86 +92,48 @@ def analyze():
                 'error': 'Sentiment model not available. Please try again later.'
             }), 500
         
-        # Clean the text
+        # Clean the text for logging purposes
         cleaned_text = clean_text(text)
         logger.info(f"Cleaned text: '{cleaned_text}'")
         
-        # First handle obvious cases directly
-        is_simple_case, simple_pred, simple_conf = ensemble._handle_simple_cases(text)
-        if is_simple_case:
-            sentiment = "Positive" if simple_pred == 1 else "Negative"
-            confidence = simple_conf * 100
-            
-            # Create simple influential words for explanation
-            important_words = []
-            for word in simple_tokenize(text):
-                if word in ["awesome", "amazing", "excellent", "great", "good", "love", 
-                           "terrible", "awful", "horrible", "hate", "bad", "worst"]:
-                    sentiment_type = "positive" if word in ["awesome", "amazing", "excellent", "great", "good", "love"] else "negative"
-                    important_words.append({
-                        "word": word,
-                        "importance": 95.0,
-                        "sentiment": sentiment_type
-                    })
-            
-            important_words = important_words[:5]  # Take up to 5 words
-            
-            logger.info(f"Simple case detected: {sentiment} with {confidence}% confidence")
-            return jsonify({
-                'text': text,
-                'sentiment': sentiment,
-                'confidence': round(confidence, 2),
-                'model': model_type,
-                'important_words': important_words
-            })
-        
-        # Try using specific model prediction with proper error handling
+        # Use the model prediction with new API format
         try:
-            # Use the specific requested model (not the ensemble) for more diverse results
-            prediction, confidence, important_words = ensemble.predict_with_specific_model(text, model_type)
+            # Try with the specific requested model
+            result = ensemble.predict(text, specific_model=model_type)
             
-            if prediction is None:
-                raise ValueError(f"Model {model_type} returned None prediction")
-                
-            sentiment = "Positive" if prediction == 1 else "Negative"
-            confidence = confidence * 100  # Convert to percentage
+            # Result is now a dictionary with all needed information
+            sentiment_label = result.get("sentiment", "Neutral")
+            confidence = result.get("confidence", 50.0)  # Already in percentage
+            important_words = result.get("influential_words", [])
+            model_used = result.get("model_used", model_type)
+            
+            logger.info(f"Analysis result: {sentiment_label} with {confidence:.2f}% confidence")
             
             # Return the prediction
             return jsonify({
                 'text': text,
-                'sentiment': sentiment,
+                'sentiment': sentiment_label,
                 'confidence': round(confidence, 2),
-                'model': model_type,
+                'model': model_used,
                 'important_words': important_words
             })
         except Exception as e:
-            logger.error(f"Error in specific model prediction: {str(e)}")
+            logger.error(f"Error in model prediction: {str(e)}")
             logger.error(traceback.format_exc())
             
-            # Fall back to ensemble prediction
-            try:
-                prediction, confidence, important_words = ensemble.predict(text)
-                sentiment = "Positive" if prediction == 1 else "Negative"
-                confidence = confidence * 100  # Convert to percentage
-                
-                logger.info(f"Using ensemble fallback for {text}: {sentiment} with {confidence}% confidence")
-                
-                return jsonify({
-                    'text': text,
-                    'sentiment': sentiment,
-                    'confidence': round(confidence, 2),
-                    'model': model_type + " (ensemble fallback)",
-                    'important_words': important_words
-                })
-            except Exception as nested_e:
-                logger.error(f"Error in ensemble fallback: {str(nested_e)}")
-                # Fall back to simple case analysis
-                return analyze_simple_case(text, model_type)
+            # Fall back to a basic analysis
+            return jsonify({
+                'text': text,
+                'sentiment': "Neutral",
+                'confidence': 50.0,
+                'model': "error_fallback",
+                'important_words': []
+            })
     except Exception as e:
-        logger.error(f"Unhandled exception in analyze route: {str(e)}")
+        logger.error(f"Error in analyze endpoint: {str(e)}")
         logger.error(traceback.format_exc())
         return jsonify({
-            'error': f'Server error: {str(e)}. Please try again.'
+            'error': str(e)
         }), 500
 
 def analyze_simple_case(text, model_type):
@@ -184,11 +149,35 @@ def analyze_simple_case(text, model_type):
     neg_count = sum(1 for term in negative_terms if term in text_lower)
     
     # Check for negation
-    negations = ["not", "don't", "doesn't", "didn't", "no", "never"]
+    negations = ["not", "don't", "doesn't", "didn't", "no", "never", "cannot", "nor", "neither"]
     has_negation = any(neg in text_lower for neg in negations)
     
+    # Identify words in negation scope
+    words = simple_tokenize(text)
+    negation_scope = {}
+    for i, word in enumerate(words):
+        if word in negations or any(neg in word for neg in ["n't"]):
+            # Mark the next 3 words (or until end of sentence) as in negation scope
+            for j in range(i+1, min(i+4, len(words))):
+                negation_scope[words[j]] = True
+                # End negation scope at punctuation
+                if words[j].endswith(('.', '!', '?', ',')):
+                    break
+    
+    # Check for contrast markers
+    contrast_markers = ["but", "however", "although", "though", "despite", "yet"]
+    has_contrast = any(marker in text_lower for marker in contrast_markers)
+    
+    # Check for neutral indicators
+    neutral_indicators = ["average", "mediocre", "ok", "okay", "fine", "neither", "nor"]
+    has_neutral = any(indicator in text_lower for indicator in neutral_indicators)
+    
     # Simple logic for sentiment
-    if has_negation:
+    if has_neutral or (pos_count == neg_count and pos_count > 0):
+        # Likely neutral
+        sentiment = "Neutral"
+        confidence = 60
+    elif has_negation:
         # Negation flips the sentiment
         if pos_count > neg_count:
             sentiment = "Negative"
@@ -198,7 +187,18 @@ def analyze_simple_case(text, model_type):
             confidence = min(65 + (neg_count * 5), 90)
         else:
             # No clear sentiment with negation
-            sentiment = "Negative" if "not" in text_lower else "Positive"
+            sentiment = "Neutral"
+            confidence = 60
+    elif has_contrast:
+        # With contrast markers, be more cautious
+        if pos_count > neg_count + 2:
+            sentiment = "Positive"
+            confidence = 70
+        elif neg_count > pos_count + 2:
+            sentiment = "Negative"
+            confidence = 70
+        else:
+            sentiment = "Neutral"
             confidence = 60
     else:
         if pos_count > neg_count:
@@ -209,25 +209,29 @@ def analyze_simple_case(text, model_type):
             confidence = min(70 + (neg_count * 5), 95)
         else:
             # Neutral or unclear sentiment
-            sentiment = "Positive"  # Default positive
-            confidence = 55
+            sentiment = "Neutral"
+            confidence = 60
     
     # Generate simple word importance
     important_words = []
-    words = simple_tokenize(text)
     
     for word in words:
+        # Check if word is in negation scope
+        word_in_negation = word in negation_scope
+        
         if word in positive_terms:
             important_words.append({
                 "word": word,
                 "importance": 80.0,
-                "sentiment": "positive" if not has_negation else "negative"
+                "sentiment": "positive",  # Keep raw sentiment for color coding
+                "negated": word_in_negation  # Add negation information
             })
         elif word in negative_terms:
             important_words.append({
                 "word": word,
                 "importance": 80.0,
-                "sentiment": "negative" if not has_negation else "positive"
+                "sentiment": "negative",  # Keep raw sentiment for color coding
+                "negated": word_in_negation  # Add negation information
             })
     
     important_words = important_words[:5]  # Limit to 5 words
