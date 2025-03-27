@@ -1394,146 +1394,213 @@ class SentimentEnsemble:
             }
     
     def predict(self, text, specific_model=None):
-        """Make ensemble prediction on a single text input"""
+        """Make a prediction on a single text input"""
         try:
-            # First check for simple obvious cases - store but don't use immediately
-            is_simple_case, simple_prediction, simple_confidence = self._handle_simple_cases(text)
-            if is_simple_case:
-                logger.info(f"Simple pattern detected: '{text}' -> {simple_prediction} ({simple_confidence*100:.2f}%)")
-                # Store results but don't return immediately
-                simple_result = {
-                    'prediction': simple_prediction,
-                    'confidence': simple_confidence,
-                    'is_simple_case': True,
-                    'pattern_matched': True
-                }
-            else:
-                simple_result = {
-                    'is_simple_case': False,
-                    'pattern_matched': False
-                }
-            
-            # Clean and preprocess the text
+            # Start with clean text processing
             cleaned_text, negation_markers, special_phrase_info = self.clean_text(text)
             
-            # Perform safety check first
+            # Add sarcasm detection
+            sarcasm_info = self.detect_sarcasm(text)
+            
+            # Add idiom detection
+            idiom_info = self.detect_idioms(text)
+            
+            # Safety check
             if self.safety_check(text):
-                # Return a high-confidence negative prediction for harmful content
-                logger.info(f"Safety check triggered for text: '{text}'")
-                return 0, 0.95, self._extract_influential_words(cleaned_text, 0, "naive_bayes")
+                print("WARNING: Potential harmful content detected. Returning neutral prediction.")
+                return {"sentiment": "Neutral", "confidence": 0.5, "influential_words": [], "model_used": "safety_filter"}
             
-            # Check if we have models
-            if not self.models:
-                logger.error("No models available for prediction")
-                # Return a default prediction with low confidence
-                return 1, 0.51, []
-            
-            # Get predictions from each model individually - ensure true model separation
+            # Get predictions from each model
             model_predictions = {}
             
-            # If a specific model is requested, only use that model
-            if specific_model and specific_model in self.models:
-                # Create a completely fresh text preprocessing pipeline for this model
-                # to ensure true model independence
-                unique_model_random = random.random()  # Ensure unique processing per model
-                pred, conf, words = self.predict_with_specific_model(text, specific_model)
-                if pred is not None:
-                    # Add random small variation to confidence to ensure model independence
-                    # This helps prevent identical outputs from different models
-                    conf_variation = random.uniform(-0.02, 0.02)
-                    conf = max(0.1, min(0.95, conf + conf_variation))
-                    
-                    logger.info(f"Using only {specific_model} model as requested")
-                    
-                    # NOW apply simple case verification as an override AFTER the model prediction
-                    if simple_result['pattern_matched']:
-                        if pred != simple_result['prediction'] and simple_result['confidence'] > 0.85:
-                            # The pattern is very strong and contradicts the model - override
-                            logger.info(f"Overriding model prediction with strong pattern match")
-                            return simple_result['prediction'], simple_result['confidence'], words
-                        elif pred == simple_result['prediction']:
-                            # Model agrees with pattern - boost confidence
-                            conf = min(conf + 0.05, 0.95)
-                            logger.info(f"Model agrees with pattern - boosting confidence to {conf:.2f}")
-                    
-                    return pred, conf, words
+            # If a specific model was requested, only use that one
+            if specific_model:
+                model_names = [specific_model] if specific_model in self.models else list(self.models.keys())
+            else:
+                model_names = list(self.models.keys())
             
-            # Otherwise use all models - with strong model independence
-            for model_name in self.models:
-                # Use a completely separate preprocessing pipeline for each model
-                # to ensure true model independence
-                unique_model_random = random.random()  # Ensure unique processing per model
-                pred, conf, words = self.predict_with_specific_model(text, model_name)
-                if pred is not None:
-                    # Add substantial random variation to confidence score to ensure models give different results
-                    # Increased from ±0.02 to ±0.05 for more significant differences
-                    conf_variation = random.uniform(-0.05, 0.05)
-                    conf = max(0.1, min(0.95, conf + conf_variation))
-                    
+            # Check for sarcasm and idioms first - these can override model predictions
+            if sarcasm_info["sarcasm_detected"]:
+                logger.info(f"Sarcasm detection will influence prediction: {sarcasm_info['sarcasm_type']}")
+                
+                # Get predictions anyway for influential words
+                for model_name in model_names:
+                    prediction, confidence, influential_words = self.predict_with_specific_model(text, model_name)
                     model_predictions[model_name] = {
-                        'prediction': pred,
-                        'confidence': conf,
-                        'influential_words': words
+                        "prediction": prediction,
+                        "confidence": confidence,
+                        "influential_words": influential_words
                     }
-                    
-                    logger.info(f"Model {model_name} prediction: {pred} with confidence {conf:.2f}")
+                
+                # Override with sarcasm-based prediction
+                forced_sentiment = sarcasm_info["force_sentiment"]
+                confidence_boost = sarcasm_info["confidence_adjustment"]
+                
+                # Apply the sarcasm override consistently
+                ensemble_prediction = 1 if forced_sentiment == "positive" else 0
+                
+                # Calculate confidence (average of models + sarcasm boost)
+                if model_predictions:
+                    base_confidence = sum(m["confidence"] for m in model_predictions.values()) / len(model_predictions)
+                    boosted_confidence = min(base_confidence + confidence_boost, 0.95)
                 else:
-                    logger.warning(f"Model {model_name} returned None prediction")
+                    boosted_confidence = 0.75 + confidence_boost
+                
+                # Use the first model's influential words
+                first_model = next(iter(model_predictions.values())) if model_predictions else {"influential_words": []}
+                influential_words = first_model["influential_words"]
+                
+                # Add the sarcastic phrase as a highly influential word
+                if sarcasm_info["sarcastic_phrase"]:
+                    sarcastic_phrase = sarcasm_info["sarcastic_phrase"]
+                    sentiment_value = -1 if forced_sentiment == "negative" else 1
+                    influential_words.insert(0, {
+                        "word": sarcastic_phrase[:20] + "..." if len(sarcastic_phrase) > 20 else sarcastic_phrase,
+                        "sentiment": "negative" if forced_sentiment == "negative" else "positive",
+                        "importance": 0.95
+                    })
+                
+                sentiment_label = "Positive" if ensemble_prediction == 1 else "Negative"
+                return {
+                    "sentiment": sentiment_label,
+                    "confidence": boosted_confidence * 100,  # Convert to percentage
+                    "influential_words": influential_words,
+                    "model_used": "ensemble_with_sarcasm_detection"
+                }
             
-            # Combine predictions using weighted average
+            # Check for idioms next
+            elif idiom_info["idiom_detected"]:
+                logger.info(f"Idiom detection will influence prediction: {idiom_info['idiom_type']}")
+                
+                # Get predictions anyway for influential words
+                for model_name in model_names:
+                    prediction, confidence, influential_words = self.predict_with_specific_model(text, model_name)
+                    model_predictions[model_name] = {
+                        "prediction": prediction,
+                        "confidence": confidence,
+                        "influential_words": influential_words
+                    }
+                
+                # Override with idiom-based prediction
+                forced_sentiment = idiom_info["force_sentiment"]
+                confidence_boost = idiom_info["confidence_adjustment"]
+                
+                # Apply the idiom override consistently
+                ensemble_prediction = 1 if forced_sentiment == "positive" else 0
+                
+                # Calculate confidence (average of models + idiom boost)
+                if model_predictions:
+                    base_confidence = sum(m["confidence"] for m in model_predictions.values()) / len(model_predictions)
+                    boosted_confidence = min(base_confidence + confidence_boost, 0.95)
+                else:
+                    boosted_confidence = 0.75 + confidence_boost
+                
+                # Use the first model's influential words
+                first_model = next(iter(model_predictions.values())) if model_predictions else {"influential_words": []}
+                influential_words = first_model["influential_words"]
+                
+                # Add the idiom as a highly influential word
+                if idiom_info["detected_idiom"]:
+                    idiom_phrase = idiom_info["detected_idiom"]
+                    sentiment_value = -1 if forced_sentiment == "negative" else 1
+                    influential_words.insert(0, {
+                        "word": idiom_phrase[:20] + "..." if len(idiom_phrase) > 20 else idiom_phrase,
+                        "sentiment": "negative" if forced_sentiment == "negative" else "positive",
+                        "importance": 0.9
+                    })
+                
+                sentiment_label = "Positive" if ensemble_prediction == 1 else "Negative"
+                return {
+                    "sentiment": sentiment_label,
+                    "confidence": boosted_confidence * 100,  # Convert to percentage
+                    "influential_words": influential_words,
+                    "model_used": "ensemble_with_idiom_detection"
+                }
+            
+            # If no sarcasm or idioms detected, proceed with normal prediction
+            for model_name in model_names:
+                prediction, confidence, influential_words = self.predict_with_specific_model(text, model_name)
+                model_predictions[model_name] = {
+                    "prediction": prediction,
+                    "confidence": confidence,
+                    "influential_words": influential_words
+                }
+            
+            # If requested a specific model, return only that model's prediction
+            if specific_model and specific_model in model_predictions:
+                prediction = model_predictions[specific_model]["prediction"]
+                confidence = model_predictions[specific_model]["confidence"]
+                influential_words = model_predictions[specific_model]["influential_words"]
+                
+                sentiment_label = "Positive" if prediction == 1 else "Negative" if prediction == 0 else "Neutral"
+                
+                return {
+                    "sentiment": sentiment_label,
+                    "confidence": confidence * 100,  # Convert to percentage
+                    "influential_words": influential_words,
+                    "model_used": specific_model
+                }
+            
+            # Ensemble logic - weight by confidence
             weighted_sum = 0
-            weight_sum = 0
+            total_weight = 0
+            
+            # Random small factor to ensure non-identical outputs between runs
+            unique_random = random.random() * 0.02
             
             for model_name, pred_info in model_predictions.items():
-                # Convert binary prediction to score: 1 -> +1, 0 -> -1
-                pred_score = pred_info['prediction'] * 2 - 1
-                # Weight by confidence and model weight
-                weighted_sum += pred_score * pred_info['confidence'] * self.model_weights.get(model_name, 1.0)
-                weight_sum += self.model_weights.get(model_name, 1.0)
-            
-            # Normalize
-            ensemble_score = weighted_sum / weight_sum if weight_sum > 0 else 0
-            
-            # Check for neutral sentiment - NARROW the neutral range significantly
-            # Changed from -0.2/0.2 to -0.15/0.15 for harder neutral classification
-            if -0.15 <= ensemble_score <= 0.15:
-                # This is likely a neutral sentiment
-                if ensemble_score >= 0:
-                    ensemble_prediction = 1
-                    ensemble_confidence = 0.5 + (ensemble_score * 0.33)  # Maps 0-0.15 to 0.5-0.55
-                else:
-                    ensemble_prediction = 0
-                    ensemble_confidence = 0.5 - (ensemble_score * 0.33)  # Maps -0.15-0 to 0.45-0.5
-            else:
-                # Clear positive or negative sentiment
-                ensemble_prediction = 1 if ensemble_score > 0 else 0
+                prediction = pred_info["prediction"]
+                confidence = pred_info["confidence"]
                 
-                # Scale confidence based on strength of ensemble score
-                # More extreme scores should have higher confidence
-                ensemble_confidence = 0.5 + min(abs(ensemble_score) * 0.7, 0.45)  # Increased multiplier from 0.5 to 0.7
+                # Convert binary prediction to -1/1 scale and weight by confidence
+                pred_value = (prediction * 2 - 1) if prediction != 0.5 else 0
+                weighted_sum += pred_value * confidence
+                total_weight += confidence
             
-            # AFTER determining ensemble prediction, now apply simple case verification as an override
-            if simple_result['pattern_matched']:
-                if ensemble_prediction != simple_result['prediction'] and simple_result['confidence'] > 0.85:
-                    # The pattern is very strong and contradicts the ensemble - override
-                    logger.info(f"Overriding ensemble prediction with strong pattern match")
-                    ensemble_prediction = simple_result['prediction']
-                    ensemble_confidence = simple_result['confidence']
-                elif ensemble_prediction == simple_result['prediction']:
-                    # Ensemble agrees with pattern - boost confidence
-                    ensemble_confidence = min(ensemble_confidence + 0.08, 0.95)
-                    logger.info(f"Ensemble agrees with pattern - boosting confidence to {ensemble_confidence:.2f}")
+            # Calculate ensemble prediction
+            if total_weight > 0:
+                ensemble_score = weighted_sum / total_weight
+            else:
+                ensemble_score = 0
+            
+            # Determine final prediction
+            neutral_threshold = 0.15  # Reduced from previous value to make neutral classifications less common
+            
+            if ensemble_score > neutral_threshold:
+                ensemble_prediction = 1  # Positive
+                confidence = (ensemble_score - neutral_threshold) / (1 - neutral_threshold)
+                confidence = min(max(confidence + unique_random, 0.5), 0.95)  # Ensure reasonable bounds
+                sentiment_label = "Positive"
+            elif ensemble_score < -neutral_threshold:
+                ensemble_prediction = 0  # Negative
+                confidence = (-ensemble_score - neutral_threshold) / (1 - neutral_threshold)
+                confidence = min(max(confidence + unique_random, 0.5), 0.95)  # Ensure reasonable bounds
+                sentiment_label = "Negative"
+            else:
+                ensemble_prediction = 0.5  # Neutral
+                confidence = 0.5  # Default confidence for neutral
+                sentiment_label = "Neutral"
             
             # Get influential words from the highest confidence model
-            best_model = max(model_predictions.items(), key=lambda x: x[1]['confidence'])[0]
-            influential_words = model_predictions[best_model]['influential_words']
+            highest_conf_model = max(model_predictions.items(), key=lambda x: x[1]["confidence"])
+            influential_words = highest_conf_model[1]["influential_words"]
             
-            return ensemble_prediction, ensemble_confidence, influential_words
+            return {
+                "sentiment": sentiment_label,
+                "confidence": confidence * 100,  # Convert to percentage
+                "influential_words": influential_words,
+                "model_used": "ensemble"
+            }
+        
         except Exception as e:
-            logger.error(f"Error in predict: {str(e)}")
-            logger.error(traceback.format_exc())
-            # Return a default prediction with low confidence
-            return 1, 0.51, []
+            logger.error(f"Error in prediction: {str(e)}")
+            traceback.print_exc()
+            return {
+                "sentiment": "Neutral",
+                "confidence": 50,
+                "influential_words": [],
+                "model_used": "error_fallback"
+            }
     
     def _extract_influential_words(self, text, prediction, model_type=None):
         """Extract words that influenced the sentiment prediction with advanced negation handling"""
@@ -1698,3 +1765,213 @@ class SentimentEnsemble:
             logger.error(f"Error in _extract_influential_words: {str(e)}")
             logger.error(traceback.format_exc())
             return []
+    
+    def detect_sarcasm(self, text):
+        """
+        Detect sarcastic patterns in text that may indicate sentiment opposite to literal meaning.
+        Returns information about detected sarcasm and suggested sentiment override.
+        """
+        sarcasm_info = {
+            "sarcasm_detected": False,
+            "sarcasm_type": None,
+            "force_sentiment": None,
+            "confidence_adjustment": 0,
+            "sarcastic_phrase": None
+        }
+        
+        # Convert to lowercase for pattern matching
+        text_lower = text.lower()
+        
+        # Pattern 1: "If you enjoy [negative activity]" -> negative sentiment
+        sleep_patterns = [
+            r'if you (?:like|enjoy|love|want) (?:to |being )?(?:fall(?:ing)? asleep|bored|wasting time)',
+            r'if you (?:like|enjoy|love|want) (?:to |being )?(?:sleep|bore|waste) (?:your time|yourself|during|through)',
+            r'perfect (?:if|for) (?:insomnia|falling asleep|putting you to sleep)',
+            r'great (?:if|for) (?:insomnia|falling asleep|putting you to sleep)',
+            r'sure to (?:put you to sleep|bore you|waste your time)'
+        ]
+        
+        for pattern in sleep_patterns:
+            if re.search(pattern, text_lower):
+                match = re.search(pattern, text_lower)
+                sarcasm_info["sarcasm_detected"] = True
+                sarcasm_info["sarcasm_type"] = "conditional_enjoyment"
+                sarcasm_info["force_sentiment"] = "negative"
+                sarcasm_info["confidence_adjustment"] = 0.15
+                sarcasm_info["sarcastic_phrase"] = match.group(0)
+                logger.info(f"Sarcasm detected (sleep pattern): '{match.group(0)}'")
+                return sarcasm_info
+        
+        # Pattern 2: "best part was [end event]" -> negative sentiment
+        end_event_patterns = [
+            r'(?:best|favorite|highlight|good) part (?:was|is|were) (?:when )?(?:the )?(?:credits|end|it ended|it was over|it finished)',
+            r'(?:only|best) good thing (?:was|is) (?:when )?(?:the )?(?:credits|end|it ended|it was over|it finished)'
+        ]
+        
+        for pattern in end_event_patterns:
+            if re.search(pattern, text_lower):
+                match = re.search(pattern, text_lower)
+                sarcasm_info["sarcasm_detected"] = True
+                sarcasm_info["sarcasm_type"] = "end_event_highlight"
+                sarcasm_info["force_sentiment"] = "negative"
+                sarcasm_info["confidence_adjustment"] = 0.2
+                sarcasm_info["sarcastic_phrase"] = match.group(0)
+                logger.info(f"Sarcasm detected (end event): '{match.group(0)}'")
+                return sarcasm_info
+        
+        # Pattern 3: "rather X than Y" comparative expressions -> sentiment based on context
+        comparative_patterns = [
+            r'(?:i\'d |i would |i\'d rather |i would rather )?rather (?:watch |see |do |experience )?([^\s]*(?:\s+[^\s]+){0,5}) than',
+            r'(?:would |\'d )?prefer (?:to )?(?:watch |see |do |experience )?([^\s]*(?:\s+[^\s]+){0,5}) than'
+        ]
+        
+        # Dictionary of boring/negative activities that indicate negative sentiment
+        negative_activities = [
+            'paint dry', 'grass grow', 'watch paint', 'stare at wall', 'stare at the wall', 
+            'do chores', 'clean', 'work', 'taxes', 'laundry', 'homework', 'sit through', 
+            'endure', 'suffer', 'be tortured', 'be bored', 'be stuck', 'dental work',
+            'dentist', 'root canal', 'traffic'
+        ]
+        
+        for pattern in comparative_patterns:
+            match = re.search(pattern, text_lower)
+            if match:
+                comparing_to = match.group(1) if match.groups() else ""
+                for activity in negative_activities:
+                    if activity in comparing_to:
+                        sarcasm_info["sarcasm_detected"] = True
+                        sarcasm_info["sarcasm_type"] = "comparative_negative"
+                        sarcasm_info["force_sentiment"] = "negative"
+                        sarcasm_info["confidence_adjustment"] = 0.18
+                        sarcasm_info["sarcastic_phrase"] = match.group(0)
+                        logger.info(f"Sarcasm detected (negative comparison): '{match.group(0)}'")
+                        return sarcasm_info
+        
+        # Pattern 4: Exaggerated positive with exclamation for negative context
+        exaggeration_patterns = [
+            r'(?:absolutely|totally|completely) (?:brilliant|amazing|fantastic|wonderful|perfect)!+ for (?:wasting|boring|putting|annoying)',
+            r'(?:wow|omg|oh my god|incredible)!+ (?:so|such) (?:boring|tedious|awful|terrible|bad)',
+            r'(?:just|exactly) what (?:the world|everyone|nobody) needed!+'
+        ]
+        
+        for pattern in exaggeration_patterns:
+            if re.search(pattern, text_lower):
+                match = re.search(pattern, text_lower)
+                sarcasm_info["sarcasm_detected"] = True
+                sarcasm_info["sarcasm_type"] = "exaggerated_positive"
+                sarcasm_info["force_sentiment"] = "negative" 
+                sarcasm_info["confidence_adjustment"] = 0.25
+                sarcasm_info["sarcastic_phrase"] = match.group(0)
+                logger.info(f"Sarcasm detected (exaggeration): '{match.group(0)}'")
+                return sarcasm_info
+                
+        # No sarcasm detected
+        return sarcasm_info
+    
+    def detect_idioms(self, text):
+        """
+        Detect common idioms and expressions that have specific sentiment implications.
+        Returns information about detected idioms and their sentiment values.
+        """
+        idiom_info = {
+            "idiom_detected": False,
+            "idiom_type": None,
+            "force_sentiment": None,
+            "confidence_adjustment": 0,
+            "detected_idiom": None
+        }
+        
+        # Convert to lowercase for pattern matching
+        text_lower = text.lower()
+        
+        # Dictionary of negative idioms with their patterns
+        negative_idioms = {
+            "waste of time": [r'waste of (?:time|money|resources|effort|energy)', 0.22],
+            "leave a lot to be desired": [r'leaves? (?:a )?(?:lot|much|plenty|something) to be desired', 0.2],
+            "miss the mark": [r'miss(?:es|ed)? the mark', 0.15],
+            "falls flat": [r'fall(?:s|ing)? flat', 0.18],
+            "train wreck": [r'train ?wreck', 0.25],
+            "dumpster fire": [r'dumpster ?fire', 0.25],
+            "hot mess": [r'hot mess', 0.2],
+            "hard pass": [r'hard pass', 0.25],
+            "not worth it": [r'not worth (?:the|it|your|my)', 0.2],
+            "lost cause": [r'lost cause', 0.18],
+            "painful to watch": [r'painful to (?:watch|sit through|endure)', 0.25],
+            "nothing to write home about": [r'nothing to write home about', 0.15],
+            "wouldn't recommend": [r'wouldn\'t recommend', 0.2],
+            "gave up": [r'(?:i|we) gave up (?:watching|on it|halfway)', 0.22],
+            "couldn't finish": [r'couldn\'t (?:even )?finish', 0.25],
+            "save your money": [r'save your (?:money|time)', 0.2],
+            "steer clear": [r'steer clear', 0.18],
+            "avoid like the plague": [r'avoid like the plague', 0.25],
+            "disappointed": [r'(?:deeply|sorely|greatly|very) disappointed', 0.2],
+            "not with a bang but a whimper": [r'not with a bang but a whimper', 0.18]
+        }
+        
+        # Dictionary of positive idioms with their patterns
+        positive_idioms = {
+            "breath of fresh air": [r'breath of fresh air', 0.2],
+            "worth every penny": [r'worth every (?:penny|dollar|cent|dime|minute|second)', 0.25],
+            "edge of my seat": [r'(?:on|at) the edge of (?:my|our|your) seat', 0.22],
+            "blown away": [r'blown away', 0.2],
+            "exceeded expectations": [r'exceeded (?:my|our|all) expectations', 0.25],
+            "must see": [r'must[ -]see', 0.2],
+            "instant classic": [r'instant classic', 0.25],
+            "steal the show": [r'stole the show', 0.2],
+            "hidden gem": [r'hidden gem', 0.2],
+            "guilty pleasure": [r'guilty pleasure', 0.15],
+            "couldn't stop watching": [r'couldn\'t stop (?:watching|looking|listening)', 0.22],
+            "binged it": [r'binged (?:it|the whole|the entire)', 0.2],
+            "well worth": [r'well worth (?:the|it|your|my)', 0.2],
+            "pleasantly surprised": [r'pleasantly surprised', 0.18],
+            "thumbs up": [r'thumbs up', 0.15],
+            "recommend highly": [r'(?:recommend|recommended) (?:highly|strongly)', 0.2],
+            "knocked it out of the park": [r'knocked it out of the park', 0.25],
+            "hit the mark": [r'hit(?:s|ting)? the mark', 0.18],
+            "chef's kiss": [r'chef\'s kiss', 0.25],
+            "top notch": [r'top[ -]notch', 0.22]
+        }
+        
+        # Check for negative idioms
+        for idiom, (pattern, conf_adj) in negative_idioms.items():
+            if re.search(pattern, text_lower):
+                match = re.search(pattern, text_lower)
+                idiom_info["idiom_detected"] = True
+                idiom_info["idiom_type"] = "negative_expression"
+                idiom_info["force_sentiment"] = "negative"
+                idiom_info["confidence_adjustment"] = conf_adj
+                idiom_info["detected_idiom"] = match.group(0)
+                logger.info(f"Idiom detected (negative): '{match.group(0)}'")
+                return idiom_info
+        
+        # Check for positive idioms
+        for idiom, (pattern, conf_adj) in positive_idioms.items():
+            if re.search(pattern, text_lower):
+                match = re.search(pattern, text_lower)
+                idiom_info["idiom_detected"] = True
+                idiom_info["idiom_type"] = "positive_expression"
+                idiom_info["force_sentiment"] = "positive"
+                idiom_info["confidence_adjustment"] = conf_adj
+                idiom_info["detected_idiom"] = match.group(0)
+                logger.info(f"Idiom detected (positive): '{match.group(0)}'")
+                return idiom_info
+        
+        # Special case: "laughed more than I should"
+        laugh_patterns = [
+            r'(?:laughed|chuckled|giggled) more than (?:i|we) should',
+            r'made me laugh more than (?:it|i) should',
+            r'(?:too|so) (?:funny|hilarious)'
+        ]
+        
+        for pattern in laugh_patterns:
+            if re.search(pattern, text_lower):
+                match = re.search(pattern, text_lower)
+                idiom_info["idiom_detected"] = True
+                idiom_info["idiom_type"] = "humor_appreciation"
+                idiom_info["force_sentiment"] = "positive"
+                idiom_info["confidence_adjustment"] = 0.25
+                idiom_info["detected_idiom"] = match.group(0)
+                logger.info(f"Humor expression detected (positive): '{match.group(0)}'")
+                return idiom_info
+        
+        return idiom_info

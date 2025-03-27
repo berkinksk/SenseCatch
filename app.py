@@ -92,116 +92,48 @@ def analyze():
                 'error': 'Sentiment model not available. Please try again later.'
             }), 500
         
-        # Clean the text
+        # Clean the text for logging purposes
         cleaned_text = clean_text(text)
         logger.info(f"Cleaned text: '{cleaned_text}'")
         
-        # Check for simple patterns but DO NOT use as primary result - store for verification only
-        is_simple_case, simple_pred, simple_conf = ensemble._handle_simple_cases(text)
-        if is_simple_case:
-            logger.info(f"Simple pattern detected, but using model analysis first: pattern={simple_pred}, conf={simple_conf:.2f}")
-        
-        # ALWAYS use the model prediction as primary analysis
-        # Try using specific model prediction with proper error handling
+        # Use the model prediction with new API format
         try:
-            # Use the specific requested model for reliable results
-            prediction, confidence, important_words = ensemble.predict_with_specific_model(text, model_type)
+            # Try with the specific requested model
+            result = ensemble.predict(text, specific_model=model_type)
             
-            if prediction is None:
-                raise ValueError(f"Model {model_type} returned None prediction")
+            # Result is now a dictionary with all needed information
+            sentiment_label = result.get("sentiment", "Neutral")
+            confidence = result.get("confidence", 50.0)  # Already in percentage
+            important_words = result.get("influential_words", [])
+            model_used = result.get("model_used", model_type)
             
-            # After getting model prediction, check if simple case was strongly detected
-            # Only override in exceptional cases where pattern is very strong and model confidence is weak
-            if is_simple_case and simple_conf > 0.9 and confidence < 0.7 and prediction != simple_pred:
-                logger.info(f"Found contradicting strong pattern ({simple_pred}) vs weak model prediction ({prediction})")
-                logger.info(f"Using pattern detection as verification/fallback")
-                prediction = simple_pred
-                confidence = simple_conf
-                
-                # Update important words for the overridden prediction
-                # Create simple influential words for explanation
-                important_words = []
-                for word in simple_tokenize(text):
-                    if word in ["awesome", "amazing", "excellent", "great", "good", "love", 
-                               "terrible", "awful", "horrible", "hate", "bad", "worst"]:
-                        sentiment_type = "positive" if word in ["awesome", "amazing", "excellent", "great", "good", "love"] else "negative"
-                        # Check for nearby negation words
-                        words = simple_tokenize(text)
-                        negated = False
-                        
-                        if word in words:
-                            word_index = words.index(word)
-                            # Check up to 3 words before this word for negation
-                            for i in range(max(0, word_index-3), word_index):
-                                if words[i] in ["not", "n't", "don't", "didn't", "doesn't", "never", "no"]:
-                                    negated = True
-                                    break
-                        
-                        important_words.append({
-                            "word": word,
-                            "importance": 95.0,
-                            "sentiment": sentiment_type,
-                            "negated": negated
-                        })
-                
-                important_words = important_words[:5]  # Take up to 5 words
-            
-            # Check if confidence falls in the neutral range (reduced from 0.4-0.6 to 0.45-0.55)
-            is_neutral = 0.45 <= confidence <= 0.55
-            
-            # Determine sentiment label
-            if is_neutral:
-                sentiment_label = "Neutral"
-            else:
-                sentiment_label = "Positive" if prediction == 1 else "Negative"
-                
-            confidence_percent = confidence * 100  # Convert to percentage
+            logger.info(f"Analysis result: {sentiment_label} with {confidence:.2f}% confidence")
             
             # Return the prediction
             return jsonify({
                 'text': text,
                 'sentiment': sentiment_label,
-                'confidence': round(confidence_percent, 2),
-                'model': model_type,
+                'confidence': round(confidence, 2),
+                'model': model_used,
                 'important_words': important_words
             })
         except Exception as e:
-            logger.error(f"Error in specific model prediction: {str(e)}")
+            logger.error(f"Error in model prediction: {str(e)}")
             logger.error(traceback.format_exc())
             
-            # Fall back to ensemble prediction
-            try:
-                prediction, confidence, important_words = ensemble.predict(text)
-                
-                # Check if confidence falls in the neutral range (0.4-0.6)
-                is_neutral = 0.4 <= confidence <= 0.6
-                
-                # Determine sentiment label
-                if is_neutral:
-                    sentiment_label = "Neutral"
-                else:
-                    sentiment_label = "Positive" if prediction == 1 else "Negative"
-                    
-                confidence_percent = confidence * 100  # Convert to percentage
-                
-                logger.info(f"Using ensemble fallback for {text}: {sentiment_label} with {confidence_percent}% confidence")
-                
-                return jsonify({
-                    'text': text,
-                    'sentiment': sentiment_label,
-                    'confidence': round(confidence_percent, 2),
-                    'model': model_type + " (ensemble fallback)",
-                    'important_words': important_words
-                })
-            except Exception as nested_e:
-                logger.error(f"Error in ensemble fallback: {str(nested_e)}")
-                # Fall back to simple case analysis
-                return analyze_simple_case(text, model_type)
+            # Fall back to a basic analysis
+            return jsonify({
+                'text': text,
+                'sentiment': "Neutral",
+                'confidence': 50.0,
+                'model': "error_fallback",
+                'important_words': []
+            })
     except Exception as e:
-        logger.error(f"Unhandled exception in analyze route: {str(e)}")
+        logger.error(f"Error in analyze endpoint: {str(e)}")
         logger.error(traceback.format_exc())
         return jsonify({
-            'error': f'Server error: {str(e)}. Please try again.'
+            'error': str(e)
         }), 500
 
 def analyze_simple_case(text, model_type):
