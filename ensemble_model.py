@@ -921,7 +921,13 @@ class SentimentEnsemble:
             return text.lower().strip(), [], {'special_phrase_detected': False}
     
     def safety_check(self, text):
-        """Check if text contains potentially harmful/negative emotional content"""
+        """
+        Check if text contains potentially harmful/negative emotional content.
+        Returns:
+        - True: Text should be filtered (contains harmful content)
+        - False: Text is safe for analysis
+        - 0.5: Text has mild concerning content (used for confidence reduction)
+        """
         try:
             # Convert to lowercase for pattern matching
             text_lower = text.lower()
@@ -958,18 +964,68 @@ class SentimentEnsemble:
                     logger.warning(f"Safety check: Concerning emotional content detected: '{text}'")
                     return True
             
-            # Common phrases that should be whitelisted (NOT blocked)
+            # EXPANDED: Common phrases that should be whitelisted (NOT blocked)
             whitelist_patterns = [
+                # Comparative expressions
                 r"rather watch paint dry",
                 r"rather see paint dry",
                 r"paint dry",
-                r"watching grass grow",
+                r"watch(?:ing)? grass grow",
                 r"wait for paint to dry",
+                r"watching wall",
+                r"watch(?:ing)? the wall",
+                r"water boil",
+                
+                # Common metaphorical expressions
                 r"bored to death",  # Figurative expression
                 r"dying to see",    # Figurative expression
-                r"killed it",       # Positive expression (did well)
+                r"dying for",       # Eager for something
+                r"dying of",        # Hyperbolic expression
+                r"kill(?:ed|ing)? (?:it|me|them|time)",  # Positive expression (did well)
                 r"dying of laughter",
-                r"died laughing"
+                r"died laughing",
+                r"laughed to death",
+                r"killing (?:me|time)",
+                r"mind-blowing",
+                r"blew my mind",
+                r"dead serious",
+                r"drop dead gorgeous",
+                
+                # Movie references
+                r"kill bill",
+                r"killing eve",
+                r"dead pool",
+                r"walking dead",
+                r"evil dead",
+                r"death wish",
+                r"death note",
+                
+                # Sarcasm and humor patterns
+                r"(?:credits roll(?:ed)?)",
+                r"(?:would|rather) (?:die|pass away|be dead) than",
+                r"would die for",
+                r"knocked me dead",
+                r"knock 'em dead",
+                r"painkiller",
+                r"pain relief",
+                r"painful to watch",
+                r"painful experience",
+                r"hurt(?:s|ing)? to watch",
+                
+                # Restaurant-specific terms
+                r"killer app",
+                r"killer dish",
+                r"to die for",
+                r"killer menu",
+                r"painfully spicy",
+                
+                # Criticism expressions
+                r"torture to watch",
+                r"suffered through",
+                r"suffering from boredom",
+                r"painful to sit through",
+                r"hurts the eyes",
+                r"murdered the song"
             ]
             
             # If text matches any whitelist pattern, explicitly return False
@@ -978,10 +1034,42 @@ class SentimentEnsemble:
                     logger.info(f"Safety check: Whitelisted expression detected: '{pattern}'")
                     return False
             
+            # Check for product or service reviews
+            review_indicators = [
+                r"review(?:ing|ed)?", r"product", r"service", r"customer", r"recommend", 
+                r"purchase(?:d)?", r"buy", r"bought", r"order(?:ed)?", r"deliver(?:y|ed)?",
+                r"restaurant", r"food", r"meal", r"movie", r"film", r"book", r"read", 
+                r"watch(?:ed)?", r"experience"
+            ]
+            
+            is_review_context = any(re.search(pattern, text_lower) for pattern in review_indicators)
+            
+            # If it's clearly a review context, reduce sensitivity to negative terms
+            if is_review_context:
+                # Review-specific whitelist check (more permissive)
+                review_whitelist = [
+                    r"kill(?:s|ed|ing)? (?:time|the mood|the vibe|the atmosphere)",
+                    r"dead (?:boring|simple|obvious|straightforward)",
+                    r"pain(?:ful)? to use",
+                    r"hurt(?:s|ing)? (?:my|the) (?:wallet|budget|bank account)"
+                ]
+                
+                if any(re.search(pattern, text_lower) for pattern in review_whitelist):
+                    logger.info(f"Safety check: Review context with permissible negative expression")
+                    return False
+            
             # General milder negative terms that shouldn't trigger on their own
             mild_negative_terms = [
                 "alone", "lonely", "die", "death", "pain", "hurt"
             ]
+            
+            # Count occurrences of mild negative terms in a review context
+            if is_review_context:
+                # In review contexts, allow mild negative terms
+                mild_term_count = sum(1 for term in mild_negative_terms if term in text_lower)
+                if mild_term_count > 0:
+                    logger.info(f"Safety check: Review context with {mild_term_count} mild negative terms - allowing")
+                    return False
             
             # These mild terms need strong contextual indicators to trigger
             strong_context_patterns = [
@@ -996,6 +1084,12 @@ class SentimentEnsemble:
                     logger.warning(f"Safety check: Strong negative context detected: '{text}'")
                     return True
             
+            # Check for standalone mild negative terms without review context
+            if not is_review_context and any(term in text_lower for term in mild_negative_terms):
+                # Return 0.5 to indicate caution but not complete filtering
+                logger.info(f"Safety check: Mild negative terms without review context - caution flag")
+                return 0.5
+                
             # If we've made it here, the content should be safe
             return False
         
@@ -1227,13 +1321,14 @@ class SentimentEnsemble:
         random_factor = random.uniform(0.01, 0.03)
         confidence = min(confidence + random_factor, 0.95)
         
-        return {
+        prediction_result = {
             "text": original_text,
-            "prediction": prediction,
             "sentiment": sentiment,
             "confidence": confidence * 100,  # Convert to percentage
             "model_used": model_name
         }
+        
+        return prediction_result
 
     def _detect_neutral_sentiment(self, text):
         """
@@ -1275,7 +1370,7 @@ class SentimentEnsemble:
         # Not deemed explicitly neutral
         return False, 0.0
 
-    def predict(self, text, modelname=None, use_sarcasm_detection=True, use_idiom_detection=True, use_contradiction_detection=True):
+    def predict(self, text, modelname=None, specific_model=None, use_sarcasm_detection=False, use_idiom_detection=False, use_contradiction_detection=False):
         """
         Make predictions on a single text input.
         """
@@ -1303,14 +1398,20 @@ class SentimentEnsemble:
             }
         
         # Perform a safety check
-        if self.safety_check(text) == 0:
+        safety_result = self.safety_check(text)
+        if safety_result is True:
+            # Hard filter for definitely harmful content
             return {
                 "text": text,
                 "sentiment": "Negative",
                 "confidence": 95.0,
                 "model_used": f"{modelname if modelname else 'default'}_with_safety_filter"
             }
-            
+        elif safety_result == 0.5:
+            # Caution flag - continue with analysis but note the concern
+            logger.info("Safety check: Mild concern detected. Continuing with analysis but will adjust confidence.")
+            # We'll handle confidence adjustment later, after model predictions
+        
         # Check for sarcasm patterns
         if use_sarcasm_detection:
             sarcasm_result = self._detect_sarcasm(text)
@@ -1366,13 +1467,13 @@ class SentimentEnsemble:
         if modelname:
             if modelname in self.models:
                 logger.info(f"Using specified model: {modelname}")
-                predictions[modelname], confidences[modelname] = self.predict_with_specific_model(cleaned_text, modelname)
+                predictions[modelname], confidences[modelname] = self.predict_with_specific_model(text, cleaned_text, modelname)
             else:
                 raise ValueError(f"Invalid model name: {modelname}")
         else:
             # Use all models
             for model_name in self.models:
-                predictions[model_name], confidences[model_name] = self.predict_with_specific_model(cleaned_text, model_name)
+                predictions[model_name], confidences[model_name] = self.predict_with_specific_model(text, cleaned_text, model_name)
         
         # Apply simple case override if appropriate
         for model in predictions:
@@ -1441,5 +1542,14 @@ class SentimentEnsemble:
             "confidence": sentiment_confidence,
             "model_used": model_used
         }
+        
+        # Apply confidence reduction for mild safety concerns
+        if safety_result == 0.5:
+            # Reduce confidence by 15% for mild safety concerns
+            original_confidence = prediction_result["confidence"]
+            reduced_confidence = max(original_confidence * 0.85, 60.0)  # Don't go below 60%
+            prediction_result["confidence"] = reduced_confidence
+            prediction_result["model_used"] = f"{prediction_result['model_used']}_with_safety_adjustment"
+            logger.info(f"Safety adjustment: Reduced confidence from {original_confidence:.2f}% to {reduced_confidence:.2f}%")
         
         return prediction_result
