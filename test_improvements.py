@@ -94,6 +94,117 @@ def test_sentiment_analysis():
                 "text": "This was awful! Just kidding, it was great.",
                 "expected_sentiment": "Positive",
                 "description": "Contradiction with positive at end"
+            },
+            
+            # NEWLY ADDED CHALLENGING TEST CASES
+            
+            # Complex negation patterns
+            {
+                "text": "The product isn't exactly what I wouldn't recommend, but it's not something I'd suggest either.",
+                "expected_sentiment": "Negative",
+                "description": "Triple negation complexity"
+            },
+            {
+                "text": "It's not that I didn't like it, I just didn't love it as much as I expected.",
+                "expected_sentiment": "Neutral",
+                "description": "Complex double negation with reservation"
+            },
+            {
+                "text": "Couldn't disagree more with the negative reviews, this product is excellent!",
+                "expected_sentiment": "Positive",
+                "description": "Negated disagreement (positive reinforcement)"
+            },
+            
+            # Subtle sarcasm cases
+            {
+                "text": "Sure, it's a masterpiece... if your standards are below ground level.",
+                "expected_sentiment": "Negative",
+                "description": "Subtle sarcasm with conditional"
+            },
+            {
+                "text": "Wow, they really outdid themselves with how forgettable this was.",
+                "expected_sentiment": "Negative",
+                "description": "Sarcasm with positive-negative contrast"
+            },
+            {
+                "text": "A cinematic achievement that will be studied for generations... as what not to do.",
+                "expected_sentiment": "Negative",
+                "description": "Delayed sarcasm reveal"
+            },
+            
+            # Restaurant-specific cases (targeted weakness)
+            {
+                "text": "The ambiance was terrible but I've never had better pasta in my life.",
+                "expected_sentiment": "Positive",
+                "description": "Restaurant contrast with strong positive after"
+            },
+            {
+                "text": "The service was impeccable, however the food was completely tasteless.",
+                "expected_sentiment": "Negative",
+                "description": "Restaurant contrast with strong negative after"
+            },
+            {
+                "text": "While the prices were outrageous, the quality of the meal justified every penny.",
+                "expected_sentiment": "Positive",
+                "description": "Restaurant value proposition contrast"
+            },
+            
+            # Neutral cases (targeted weakness)
+            {
+                "text": "It has some good points and some bad points, so it evens out in the end.",
+                "expected_sentiment": "Neutral",
+                "description": "Explicit balanced opinion"
+            },
+            {
+                "text": "I'm completely on the fence about this one. Can't decide if I like it or not.",
+                "expected_sentiment": "Neutral",
+                "description": "Explicit indecision"
+            },
+            {
+                "text": "It's exactly what you'd expect, nothing more, nothing less.",
+                "expected_sentiment": "Neutral",
+                "description": "Met expectations exactly"
+            },
+            
+            # Contextual sentiment
+            {
+                "text": "For a Monday, the service was surprisingly good.",
+                "expected_sentiment": "Positive",
+                "description": "Contextual positive with lowered expectations"
+            },
+            {
+                "text": "Given the price, I expected much higher quality.",
+                "expected_sentiment": "Negative",
+                "description": "Contextual negative with unmet expectations"
+            },
+            
+            # Idiomatic expressions
+            {
+                "text": "This film is a real diamond in the rough - don't miss it!",
+                "expected_sentiment": "Positive",
+                "description": "Positive idiom with recommendation"
+            },
+            {
+                "text": "The app runs like a dream on my new phone.",
+                "expected_sentiment": "Positive",
+                "description": "Positive performance idiom"
+            },
+            {
+                "text": "That movie was a complete train wreck from start to finish.",
+                "expected_sentiment": "Negative",
+                "description": "Negative disaster idiom"
+            },
+            
+            # Complex mixed sentiment
+            {
+                "text": "While I loved the graphics, hated the story, and felt neutral about the acting, overall I enjoyed it.",
+                "expected_sentiment": "Positive",
+                "description": "Mixed sentiment with explicit conclusion"
+            },
+            {
+                "text": "Though some parts were incredible, others were horrible, but ultimately I was disappointed.",
+                "expected_sentiment": "Negative",
+                "description": "Mixed sentiment with explicit negative conclusion"
             }
         ]
         
@@ -116,7 +227,7 @@ def test_sentiment_analysis():
                 logger.info(f"Expected: {expected}")
                 
                 use_sarcasm = "sarcasm" in description.lower()
-                use_idiom = "humor" in description.lower() or "guilty pleasure" in text.lower()
+                use_idiom = "humor" in description.lower() or "idiom" in description.lower() or "guilty pleasure" in text.lower()
                 
                 result = model.predict(
                     text, 
@@ -149,15 +260,45 @@ def test_sentiment_analysis():
             pass_rate = (pass_count / len(model_results)) * 100
             logger.info(f"\n{model_name} pass rate: {pass_rate:.1f}% ({pass_count}/{len(model_results)})")
             
+            # Calculate category-specific pass rates
+            categories = {
+                "negation": [i for i, tc in enumerate(test_cases) if "negat" in tc["description"].lower()],
+                "contrast": [i for i, tc in enumerate(test_cases) if "contrast" in tc["description"].lower()],
+                "sarcasm": [i for i, tc in enumerate(test_cases) if "sarcasm" in tc["description"].lower()],
+                "neutral": [i for i, tc in enumerate(test_cases) if "neutral" in tc["description"].lower()],
+                "idiom": [i for i, tc in enumerate(test_cases) if "idiom" in tc["description"].lower()],
+                "restaurant": [i for i, tc in enumerate(test_cases) if "restaurant" in tc["description"].lower()]
+            }
+            
+            category_results = {}
+            for category, indices in categories.items():
+                if indices:
+                    category_pass_count = sum(1 for i in indices if model_results[i]["passed"])
+                    category_pass_rate = (category_pass_count / len(indices)) * 100
+                    category_results[category] = {
+                        "pass_rate": category_pass_rate,
+                        "count": f"{category_pass_count}/{len(indices)}"
+                    }
+                    logger.info(f"{category} pass rate: {category_pass_rate:.1f}% ({category_pass_count}/{len(indices)})")
+            
             results[model_name] = {
-                "pass_rate": pass_rate,
+                "overall_pass_rate": pass_rate,
+                "category_pass_rates": category_results,
                 "test_results": model_results
             }
         
         # Overall summary
         logger.info("\n----- TEST SUMMARY -----")
         for model_name, model_result in results.items():
-            logger.info(f"{model_name}: {model_result['pass_rate']:.1f}% pass rate")
+            logger.info(f"{model_name}: {model_result['overall_pass_rate']:.1f}% pass rate")
+            
+            # Compare models on categories
+            if model_name == models_to_test[-1]:  # When processing the last model
+                logger.info("\n----- CATEGORY COMPARISON -----")
+                for category in categories.keys():
+                    if all(category in results[m]["category_pass_rates"] for m in models_to_test):
+                        rates = [f"{results[m]['category_pass_rates'][category]['pass_rate']:.1f}%" for m in models_to_test]
+                        logger.info(f"{category}: {' vs '.join(rates)}")
         
         # Save results to file
         with open("sentiment_test_results.json", "w") as f:
