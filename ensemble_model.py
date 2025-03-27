@@ -45,9 +45,33 @@ except ImportError:
 class SentimentEnsemble:
     """Ensemble model that combines multiple sentiment classifiers"""
     
-    def __init__(self):
-        """Initialize the ensemble with loaded models"""
+    def __init__(self, models_dir=None, use_cache=True):
+        """Initialize the ensemble model with NB and LR models."""
         self.models = {}
+        self.models_dir = models_dir or os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
+        self.use_cache = use_cache
+        
+        # Define very positive and very negative phrases for sentiment analysis
+        self.VERY_POSITIVE_PHRASES = [
+            "excellent", "amazing", "outstanding", "fantastic", "terrific",
+            "wonderful", "brilliant", "superb", "perfect", "great",
+            "love", "best", "exceptional", "marvelous", "awesome",
+            "impressive", "exceptional", "delightful", "fabulous", "incredible"
+        ]
+        
+        self.VERY_NEGATIVE_PHRASES = [
+            "terrible", "awful", "horrible", "dreadful", "abysmal",
+            "worst", "pathetic", "atrocious", "appalling", "disgusting",
+            "hate", "disappointing", "horrendous", "disastrous", "catastrophic",
+            "useless", "worthless", "abominable", "deplorable", "detestable"
+        ]
+        
+        # Load existing models or train new ones
+        model_paths = {
+            "naive_bayes": os.path.join(self.models_dir, "naive_bayes_model.pkl"),
+            "logistic_regression": os.path.join(self.models_dir, "logistic_regression_model.pkl")
+        }
+        
         self.vectorizers = {}
         self.dict_vectorizers = {}
         self.feature_dimensions = self._load_feature_dimensions()
