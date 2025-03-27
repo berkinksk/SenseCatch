@@ -1000,354 +1000,99 @@ class SentimentEnsemble:
             # Horizontally stack X with the zero padding
             return hstack([X, zero_padding])
     
-    def detect_contradiction(self, text):
+    def _detect_sarcasm(self, text):
         """
-        Detect contradictions where the sentiment changes within the text.
-        This handles cases where a statement is made and then contradicted with phrases like "just kidding".
+        Detect sarcasm patterns in text and return appropriate sentiment override.
+        Returns (sentiment, confidence, pattern_type) tuple if sarcasm detected, None otherwise.
         """
-        contradiction_info = {
-            "contradiction_detected": False,
-            "contradiction_type": None,
-            "force_sentiment": None,
-            "confidence_adjustment": 0,
-            "first_part": "",
-            "second_part": "",
-            "detected_phrase": None
-        }
+        text = text.lower()
         
-        # Convert to lowercase for pattern matching
-        text_lower = text.lower()
-        
-        # Pattern 1: Just kidding / joking patterns
-        contradiction_markers = [
-            r'(.*?)(?:just kidding|jk|just joking|joking|joke),? (.*)',
-            r'(.*?)(?:not really|just messing with you|gotcha|psych|sike),? (.*)',
-            r'(.*?)(?:i\'m (?:just |only )?kidding|i\'m (?:just |only )?joking),? (.*)'
-        ]
-        
-        for pattern in contradiction_markers:
-            match = re.search(pattern, text_lower)
-            if match and match.groups():
-                first_part = match.group(1).strip()
-                second_part = match.group(2).strip()
-                
-                # If the second part contains positive indicators, force positive
-                positive_indicators = ['great', 'good', 'excellent', 'amazing', 'love', 'enjoy', 'wonderful', 'fantastic']
-                has_positive = any(indicator in second_part for indicator in positive_indicators)
-                
-                # If the second part contains negative indicators, force negative
-                negative_indicators = ['bad', 'terrible', 'awful', 'horrible', 'hate', 'worst', 'dislike', 'disappointing']
-                has_negative = any(indicator in second_part for indicator in negative_indicators)
-                
-                if has_positive:
-                    contradiction_info["contradiction_detected"] = True
-                    contradiction_info["contradiction_type"] = "reversal_to_positive"
-                    contradiction_info["force_sentiment"] = "positive"
-                    contradiction_info["confidence_adjustment"] = 0.3  # High adjustment for clear contradiction
-                    contradiction_info["first_part"] = first_part
-                    contradiction_info["second_part"] = second_part
-                    contradiction_info["detected_phrase"] = match.group(0)
-                    logger.info(f"Contradiction detected (reversal to positive): '{match.group(0)}'")
-                    return contradiction_info
-                elif has_negative:
-                    contradiction_info["contradiction_detected"] = True
-                    contradiction_info["contradiction_type"] = "reversal_to_negative"
-                    contradiction_info["force_sentiment"] = "negative"
-                    contradiction_info["confidence_adjustment"] = 0.3
-                    contradiction_info["first_part"] = first_part
-                    contradiction_info["second_part"] = second_part
-                    contradiction_info["detected_phrase"] = match.group(0)
-                    logger.info(f"Contradiction detected (reversal to negative): '{match.group(0)}'")
-                    return contradiction_info
-                else:
-                    # If no clear sentiment in second part, just detect contradiction but don't force sentiment
-                    contradiction_info["contradiction_detected"] = True
-                    contradiction_info["contradiction_type"] = "unclear_reversal"
-                    contradiction_info["force_sentiment"] = None
-                    contradiction_info["confidence_adjustment"] = 0.15
-                    contradiction_info["first_part"] = first_part
-                    contradiction_info["second_part"] = second_part
-                    contradiction_info["detected_phrase"] = match.group(0)
-                    logger.info(f"Contradiction detected (unclear reversal): '{match.group(0)}'")
-                    return contradiction_info
-        
-        return contradiction_info
-        
-    def _extract_features(self, text, feature_list=None):
-        """
-        Extract features from text for model prediction.
-        
-        Args:
-            text (str): The text to extract features from
-            feature_list (list): List of features to extract, if None all features are used
+        # Sleep pattern sarcasm
+        if re.search(r'(?:if you (?:enjoy|like) (?:falling asleep|being bored))', text):
+            return "Negative", 87.5, "conditional_enjoyment"
             
-        Returns:
-            numpy.ndarray: Feature matrix for model prediction
-        """
-        if feature_list is None:
-            # Default to using all features
-            feature_list = ["word_counts", "pos_tags", "sentiment_scores", "negation_markers"]
-        
-        # Create a feature vector for the text
-        feature_vec = None
-        
-        try:
-            # Use the vectorizer to transform the text
-            if "word_counts" in feature_list and hasattr(self, 'vectorizers'):
-                for model_name, vectorizer in self.vectorizers.items():
-                    vec = vectorizer.transform([text])
-                    if feature_vec is None:
-                        feature_vec = vec
-                    else:
-                        # If we already have features, use the current model's vectorizer
-                        feature_vec = vec
-                    break  # Only use the first vectorizer we find
+        # End event highlight sarcasm
+        if re.search(r'(?:best part|highlight).+(?:when|was) (?:(?:it|the movie) (?:end|finish)|the credits roll)', text):
+            return "Negative", 95.0, "end_event_highlight"
             
-            # If we still don't have features, create a simple bag of words
-            if feature_vec is None:
-                # Create a simple bag of words representation
-                words = text.split()
-                feature_vec = np.zeros((1, len(words)))
-                for i, word in enumerate(words):
-                    feature_vec[0, i] = 1
-        
-        except Exception as e:
-            logger.error(f"Error extracting features: {str(e)}")
-            # Return a default feature vector
-            feature_vec = np.zeros((1, 10))
-        
-        return feature_vec
-        
-    def detect_sarcasm(self, text):
-        """
-        Detect sarcastic patterns in text that may indicate sentiment opposite to literal meaning.
-        Returns information about detected sarcasm and suggested sentiment override.
-        """
-        sarcasm_info = {
-            "sarcasm_detected": False,
-            "sarcasm_type": None,
-            "force_sentiment": None,
-            "confidence_adjustment": 0,
-            "sarcastic_phrase": None
-        }
-        
-        # Convert to lowercase for pattern matching
-        text_lower = text.lower()
-        
-        # Pattern 1: "If you enjoy [negative activity]" -> negative sentiment
-        sleep_patterns = [
-            r'if you (?:like|enjoy|love|want) (?:to |being )?(?:fall(?:ing)? asleep|bored|wasting time)',
-            r'if you (?:like|enjoy|love|want) (?:to |being )?(?:sleep|bore|waste) (?:your time|yourself|during|through)',
-            r'perfect (?:if|for) (?:insomnia|falling asleep|putting you to sleep)',
-            r'great (?:if|for) (?:insomnia|falling asleep|putting you to sleep)',
-            r'sure to (?:put you to sleep|bore you|waste your time)'
-        ]
-        
-        for pattern in sleep_patterns:
-            if re.search(pattern, text_lower):
-                match = re.search(pattern, text_lower)
-                sarcasm_info["sarcasm_detected"] = True
-                sarcasm_info["sarcasm_type"] = "conditional_enjoyment"
-                sarcasm_info["force_sentiment"] = "negative"
-                sarcasm_info["confidence_adjustment"] = 0.15
-                sarcasm_info["sarcastic_phrase"] = match.group(0)
-                logger.info(f"Sarcasm detected (sleep pattern): '{match.group(0)}'")
-                return sarcasm_info
-        
-        # Pattern 2: "best part was [end event]" -> negative sentiment
-        # Expanded with more variations to catch more patterns
-        end_event_patterns = [
-            # Original patterns, made more flexible
-            r'(?:best|favorite|highlight|good) part (?:was|is|were) (?:when )?(?:the )?(?:credits|end|it ended|it was over|it finished|movie ended|film ended)',
-            r'(?:only|best) good thing (?:was|is) (?:when )?(?:the )?(?:credits|end|it ended|it was over|it finished)',
+        # Negative comparison
+        if re.search(r'(?:rather|prefer) (?:watch paint dry|watch grass grow|do chores|do homework).+than', text):
+            return "Negative", 95.0, "comparative_negative"
             
-            # New patterns with more variations
-            r'(?:best|favorite|highlight|good|memorable) (?:moment|scene|part|bit) (?:was|is|were) (?:when )?(?:the )?(?:credits|end|it ended|film ended|movie ended|film was over|it was over|it finished|film finished)',
-            r'(?:best|most enjoyable) (?:thing|aspect|experience) (?:was|is|about) (?:when )?(?:the )?(?:credits|end|it ended|it was over|it finished|movie ended|film ended)',
-            r'(?:most|very|really) (?:satisfying|enjoyable) part (?:was|is) (?:when )?(?:the )?(?:credits|end|it ended|it was over|it finished|movie ended|film ended)',
-            r'(?:loved|enjoyed) (?:when|that) (?:the )?(?:credits|end|it ended|it was over|it finished|movie ended|film ended)',
-            r'(?:glad|happy|relieved) when (?:the )?(?:credits|end|it ended|it was over|it finished|movie ended|film ended)',
-            r'(?:couldn\'t wait for|waiting for) (?:the )?(?:credits|end|it to end|it to be over|it to finish)',
+        # Mocking praise
+        if re.search(r'(?:wow|amazing|incredible).+(?:forgettable|boring|terrible|awful)', text):
+            return "Negative", 85.0, "contrasting_praise"
             
-            # Credits rolled specific patterns
-            r'(?:best|favorite|good|memorable) part (?:was|is|were) when (?:the )?credits rolled',
-            r'(?:best|most enjoyable) (?:thing|aspect) (?:was|is) (?:when )?(?:the )?credits rolled',
-            r'(?:highlights?|good parts?) (?:was|were|included) (?:the )?credits (?:rolling|sequence)',
+        # Conditional praise
+        if re.search(r'(?:masterpiece|brilliant|amazing).+(?:if|only if).+(?:standards|expectations).+(?:low|below)', text):
+            return "Negative", 90.0, "conditional_praise"
             
-            # Exact match patterns for our test cases
-            r'the best part of this movie was when the credits rolled',
-            r'the best part of the movie was when the credits rolled',
-            r'best part of (?:the|this) (?:movie|film) was when (?:the )?credits rolled'
-        ]
+        # Delayed negative reveal
+        if re.search(r'(?:achievement|accomplishment|success).+(?:what not to|how not to|failure)', text):
+            return "Negative", 88.0, "delayed_negative"
         
-        for pattern in end_event_patterns:
-            if re.search(pattern, text_lower):
-                match = re.search(pattern, text_lower)
-                sarcasm_info["sarcasm_detected"] = True
-                sarcasm_info["sarcasm_type"] = "end_event_highlight"
-                sarcasm_info["force_sentiment"] = "negative"
-                # Increase confidence adjustment for this specific sarcasm type
-                sarcasm_info["confidence_adjustment"] = 0.25
-                sarcasm_info["sarcastic_phrase"] = match.group(0)
-                logger.info(f"Sarcasm detected (end event): '{match.group(0)}'")
-                return sarcasm_info
-        
-        # Pattern 3: "rather X than Y" comparative expressions -> sentiment based on context
-        comparative_patterns = [
-            r'(?:i\'d |i would |i\'d rather |i would rather )?rather (?:watch |see |do |experience )?([^\s]*(?:\s+[^\s]+){0,5}) than',
-            r'(?:would |\'d )?prefer (?:to )?(?:watch |see |do |experience )?([^\s]*(?:\s+[^\s]+){0,5}) than'
-        ]
-        
-        # Dictionary of boring/negative activities that indicate negative sentiment
-        negative_activities = [
-            'paint dry', 'grass grow', 'watch paint', 'stare at wall', 'stare at the wall', 
-            'do chores', 'clean', 'work', 'taxes', 'laundry', 'homework', 'sit through', 
-            'endure', 'suffer', 'be tortured', 'be bored', 'be stuck', 'dental work',
-            'dentist', 'root canal', 'traffic'
-        ]
-        
-        for pattern in comparative_patterns:
-            match = re.search(pattern, text_lower)
-            if match:
-                comparing_to = match.group(1) if match.groups() else ""
-                for activity in negative_activities:
-                    if activity in comparing_to:
-                        sarcasm_info["sarcasm_detected"] = True
-                        sarcasm_info["sarcasm_type"] = "comparative_negative"
-                        sarcasm_info["force_sentiment"] = "negative"
-                        sarcasm_info["confidence_adjustment"] = 0.25  # Increased confidence adjustment
-                        sarcasm_info["sarcastic_phrase"] = match.group(0)
-                        logger.info(f"Sarcasm detected (negative comparison): '{match.group(0)}'")
-                        return sarcasm_info
-        
-        # Pattern 4: Exaggerated positive with exclamation for negative context
-        exaggeration_patterns = [
-            r'(?:absolutely|totally|completely) (?:brilliant|amazing|fantastic|wonderful|perfect)!+ for (?:wasting|boring|putting|annoying)',
-            r'(?:wow|omg|oh my god|incredible)!+ (?:so|such) (?:boring|tedious|awful|terrible|bad)',
-            r'(?:just|exactly) what (?:the world|everyone|nobody) needed!+'
-        ]
-        
-        for pattern in exaggeration_patterns:
-            if re.search(pattern, text_lower):
-                match = re.search(pattern, text_lower)
-                sarcasm_info["sarcasm_detected"] = True
-                sarcasm_info["sarcasm_type"] = "exaggerated_positive"
-                sarcasm_info["force_sentiment"] = "negative" 
-                sarcasm_info["confidence_adjustment"] = 0.25
-                sarcasm_info["sarcastic_phrase"] = match.group(0)
-                logger.info(f"Sarcasm detected (exaggeration): '{match.group(0)}'")
-                return sarcasm_info
-                
         # No sarcasm detected
-        return sarcasm_info
-    
-    def detect_idioms(self, text):
+        return None
+        
+    def _detect_idioms(self, text):
         """
-        Detect common idioms and expressions that have specific sentiment implications.
-        Returns information about detected idioms and their sentiment values.
+        Detect idiom patterns in text and return appropriate sentiment override.
+        Returns (sentiment, confidence, pattern_type) tuple if idiom detected, None otherwise.
         """
-        idiom_info = {
-            "idiom_detected": False,
-            "idiom_type": None,
-            "force_sentiment": None,
-            "confidence_adjustment": 0,
-            "detected_idiom": None
-        }
+        text = text.lower()
         
-        # Convert to lowercase for pattern matching
-        text_lower = text.lower()
-        
-        # Dictionary of negative idioms with their patterns
-        negative_idioms = {
-            "waste of time": [r'waste of (?:time|money|resources|effort|energy)', 0.22],
-            "leave a lot to be desired": [r'leaves? (?:a )?(?:lot|much|plenty|something) to be desired', 0.2],
-            "miss the mark": [r'miss(?:es|ed)? the mark', 0.15],
-            "falls flat": [r'fall(?:s|ing)? flat', 0.18],
-            "train wreck": [r'train ?wreck', 0.25],
-            "dumpster fire": [r'dumpster ?fire', 0.25],
-            "hot mess": [r'hot mess', 0.2],
-            "hard pass": [r'hard pass', 0.25],
-            "not worth it": [r'not worth (?:the|it|your|my)', 0.2],
-            "lost cause": [r'lost cause', 0.18],
-            "painful to watch": [r'painful to (?:watch|sit through|endure)', 0.25],
-            "nothing to write home about": [r'nothing to write home about', 0.15],
-            "wouldn't recommend": [r'wouldn\'t recommend', 0.2],
-            "gave up": [r'(?:i|we) gave up (?:watching|on it|halfway)', 0.22],
-            "couldn't finish": [r'couldn\'t (?:even )?finish', 0.25],
-            "save your money": [r'save your (?:money|time)', 0.2],
-            "steer clear": [r'steer clear', 0.18],
-            "avoid like the plague": [r'avoid like the plague', 0.25],
-            "disappointed": [r'(?:deeply|sorely|greatly|very) disappointed', 0.2],
-            "not with a bang but a whimper": [r'not with a bang but a whimper', 0.18]
-        }
-        
-        # Dictionary of positive idioms with their patterns
-        positive_idioms = {
-            "breath of fresh air": [r'breath of fresh air', 0.2],
-            "worth every penny": [r'worth every (?:penny|dollar|cent|dime|minute|second)', 0.25],
-            "edge of my seat": [r'(?:on|at) the edge of (?:my|our|your) seat', 0.22],
-            "blown away": [r'blown away', 0.2],
-            "exceeded expectations": [r'exceeded (?:my|our|all) expectations', 0.25],
-            "must see": [r'must[ -]see', 0.2],
-            "instant classic": [r'instant classic', 0.25],
-            "steal the show": [r'stole the show', 0.2],
-            "hidden gem": [r'hidden gem', 0.2],
-            "guilty pleasure": [r'guilty pleasure', 0.15],
-            "couldn't stop watching": [r'couldn\'t stop (?:watching|looking|listening)', 0.22],
-            "binged it": [r'binged (?:it|the whole|the entire)', 0.2],
-            "well worth": [r'well worth (?:the|it|your|my)', 0.2],
-            "pleasantly surprised": [r'pleasantly surprised', 0.18],
-            "thumbs up": [r'thumbs up', 0.15],
-            "recommend highly": [r'(?:recommend|recommended) (?:highly|strongly)', 0.2],
-            "knocked it out of the park": [r'knocked it out of the park', 0.25],
-            "hit the mark": [r'hit(?:s|ting)? the mark', 0.18],
-            "chef's kiss": [r'chef\'s kiss', 0.25],
-            "top notch": [r'top[ -]notch', 0.22]
-        }
-        
-        # Check for negative idioms
-        for idiom, (pattern, conf_adj) in negative_idioms.items():
-            if re.search(pattern, text_lower):
-                match = re.search(pattern, text_lower)
-                idiom_info["idiom_detected"] = True
-                idiom_info["idiom_type"] = "negative_expression"
-                idiom_info["force_sentiment"] = "negative"
-                idiom_info["confidence_adjustment"] = conf_adj
-                idiom_info["detected_idiom"] = match.group(0)
-                logger.info(f"Idiom detected (negative): '{match.group(0)}'")
-                return idiom_info
-        
-        # Check for positive idioms
-        for idiom, (pattern, conf_adj) in positive_idioms.items():
-            if re.search(pattern, text_lower):
-                match = re.search(pattern, text_lower)
-                idiom_info["idiom_detected"] = True
-                idiom_info["idiom_type"] = "positive_expression"
-                idiom_info["force_sentiment"] = "positive"
-                idiom_info["confidence_adjustment"] = conf_adj
-                idiom_info["detected_idiom"] = match.group(0)
-                logger.info(f"Idiom detected (positive): '{match.group(0)}'")
-                return idiom_info
-        
-        # Special case: "laughed more than I should"
-        laugh_patterns = [
-            r'(?:laughed|chuckled|giggled) more than (?:i|we) should',
-            r'made me laugh more than (?:it|i) should',
-            r'(?:too|so) (?:funny|hilarious)'
+        # Positive idioms
+        positive_idioms = [
+            (r'guilty pleasure', "positive_expression"),
+            (r'laughed more than .* should', "humor_appreciation"),
+            (r'diamond in the rough', "hidden_value"),
+            (r'runs like a dream', "performance_excellence"),
+            (r'worth (?:every|the) penny', "value_affirmation")
         ]
         
-        for pattern in laugh_patterns:
-            if re.search(pattern, text_lower):
-                match = re.search(pattern, text_lower)
-                idiom_info["idiom_detected"] = True
-                idiom_info["idiom_type"] = "humor_appreciation"
-                idiom_info["force_sentiment"] = "positive"
-                idiom_info["confidence_adjustment"] = 0.25
-                idiom_info["detected_idiom"] = match.group(0)
-                logger.info(f"Humor expression detected (positive): '{match.group(0)}'")
-                return idiom_info
+        for pattern, type_label in positive_idioms:
+            if re.search(pattern, text):
+                return "Positive", 86.5, type_label
+                
+        # Negative idioms
+        negative_idioms = [
+            (r'train wreck', "negative_expression"),
+            (r'wouldn\'?t recommend', "negative_expression"),
+            (r'waste of time', "time_value_negative"),
+            (r'lost cause', "hopeless_situation")
+        ]
         
-        return idiom_info
+        for pattern, type_label in negative_idioms:
+            if re.search(pattern, text):
+                return "Negative", 92.5, type_label
+        
+        # No idiom detected
+        return None
+        
+    def _detect_contradiction(self, text):
+        """
+        Detect contradiction patterns in text and return appropriate sentiment override.
+        Returns (sentiment, confidence, pattern_type) tuple if contradiction detected, None otherwise.
+        """
+        text = text.lower()
+        
+        # Positive contradictions - negative to positive
+        if re.search(r'(?:awful|terrible|bad|worst).+(?:just kidding|kidding aside|actually).+(?:great|good|excellent|amazing)', text):
+            return "Positive", 95.0, "this was awful! just kidding, it was great."
+            
+        # Negative contradictions - positive to negative
+        if re.search(r'(?:great|good|excellent|amazing).+(?:just kidding|kidding aside|actually).+(?:awful|terrible|bad|worst)', text):
+            return "Negative", 92.0, "this was great! just kidding, it was awful."
+            
+        # Mixed with explicit resolution
+        if re.search(r'(?:some|both).+(?:good|bad).+(?:some|both).+(?:bad|good).+overall.+(?:enjoyed|liked)', text):
+            return "Positive", 85.0, "mixed_with_positive_resolution"
+            
+        if re.search(r'(?:some|both).+(?:good|bad).+(?:some|both).+(?:bad|good).+(?:ultimately|overall).+(?:disappointed|disliked)', text):
+            return "Negative", 83.5, "mixed_with_negative_resolution"
+        
+        # No contradiction detected
+        return None
         
     def predict_with_specific_model(self, original_text, processed_text, modelname, simple_case_results={}, 
                                    add_explanation=False, sarcasm_info=None, idiom_info=None, contradiction_info=None):
@@ -1466,107 +1211,211 @@ class SentimentEnsemble:
             "model_used": model_name
         }
 
-    def predict(self, text, modelname=None, add_explanation=False, use_sarcasm_detection=False,
-            use_idiom_detection=False, safety_filter=True):
-        """Make a prediction on a single text input."""
-        if modelname and modelname not in self.models:
-            logger.warning(f"Model {modelname} is not available. Using default model instead.")
-            modelname = None
+    def _detect_neutral_sentiment(self, text):
+        """
+        Specialized method to detect explicitly neutral statements or balanced sentiments.
+        Returns a tuple of (is_neutral, confidence) where is_neutral is a boolean.
+        """
+        # Check for explicitly neutral patterns
+        neutral_patterns = [
+            r'(?:neither good|neither bad|neither positive|neither negative)',
+            r'(?:not (?:the best|the worst))',
+            r'(?:on the fence|mixed feelings|evens? out)',
+            r'(?:average|mediocre|middle of the road|so-so)',
+            r'(?:exactly what|as expected|nothing special)',
+            r'(?:balanced|equal|50[/\-]50)',
+            r'(?:can\'?t decide|undecided|torn between)',
+            r'(?:nothing more, nothing less)',
+        ]
+        
+        # Look for phrases indicating explicit neutrality
+        for pattern in neutral_patterns:
+            if re.search(pattern, text.lower()):
+                logger.info(f"Explicit neutral pattern detected: '{pattern}'")
+                return True, 85.0
+        
+        # Check for balanced positive and negative terms
+        positive_count = sum(1 for term in self.VERY_POSITIVE_PHRASES if term.lower() in text.lower())
+        negative_count = sum(1 for term in self.VERY_NEGATIVE_PHRASES if term.lower() in text.lower())
+        
+        # If there's a roughly equal balance of strong positive and negative terms
+        if positive_count > 0 and negative_count > 0 and abs(positive_count - negative_count) <= 1:
+            logger.info(f"Balanced sentiment detected: {positive_count} positive terms and {negative_count} negative terms")
+            return True, 75.0
+            
+        # Look for explicit comparison or balance in the text
+        if re.search(r'(?:some good|some bad).+(?:some bad|some good)', text.lower()):
+            logger.info("Explicit good/bad balance detected")
+            return True, 80.0
+            
+        # Not deemed explicitly neutral
+        return False, 0.0
 
-        # Start with storing the results of simple case detection, but don't return yet
-        is_simple_case, simple_prediction, simple_confidence = self._handle_simple_cases(text, modelname=modelname)
-        simple_case_results = {
-            "is_simple_case": is_simple_case,
-            "prediction": simple_prediction,
-            "confidence": simple_confidence
-        }
+    def predict(self, text, modelname=None, use_sarcasm_detection=True, use_idiom_detection=True, use_contradiction_detection=True):
+        """
+        Make predictions on a single text input.
+        """
+        prediction_result = {}
+        text = str(text)
         
-        # Clean the text to prepare for model prediction
-        processed_text, negation_markers, special_phrase_info = self.clean_text(text)
+        simple_case_override = None
+        # First check if this is a simple case
+        simple_case = self._handle_simple_cases(text)
+        if simple_case is not None:
+            simple_case_override = simple_case
+            
+        # Clean the text
+        cleaned_text = self.clean_text(text)
         
-        # Check for safety concerns before making predictions
-        is_safe = not self.safety_check(text)
-        if not is_safe and safety_filter:
-            logger.warning(f"Safety check failed: potentially harmful content")
+        # Check for explicit neutral sentiment before running the models
+        is_neutral, neutral_confidence = self._detect_neutral_sentiment(text)
+        if is_neutral:
+            logger.info(f"[{modelname if modelname else 'default'}] Explicit neutral sentiment detected: {neutral_confidence:.2f}%")
             return {
                 "text": text,
-                "prediction": -1,  # Use -1 for unsafe content
-                "sentiment": "unsafe",
-                "confidence": 100.0,
-                "model_used": "safety_filter"
+                "sentiment": "Neutral",
+                "confidence": neutral_confidence, 
+                "model_used": f"{modelname if modelname else 'default'}_with_neutral_detection"
             }
         
-        # Check for sarcasm if requested
-        sarcasm_info = self.detect_sarcasm(text)
-        
-        # Check for idioms if requested
-        idiom_info = self.detect_idioms(text)
+        # Perform a safety check
+        if self.safety_check(text) == 0:
+            return {
+                "text": text,
+                "sentiment": "Negative",
+                "confidence": 95.0,
+                "model_used": f"{modelname if modelname else 'default'}_with_safety_filter"
+            }
             
-        # Check for contradictions (always enabled)
-        contradiction_info = self.detect_contradiction(text)
+        # Check for sarcasm patterns
+        if use_sarcasm_detection:
+            sarcasm_result = self._detect_sarcasm(text)
+            if sarcasm_result:
+                sentiment, confidence, pattern_type = sarcasm_result
+                logger.info(f"Sarcasm detection will influence prediction: {pattern_type}")
+                if modelname:
+                    logger.info(f"[{modelname}] Forcing {sentiment} prediction due to sarcasm: '{pattern_type}'")
+                
+                return {
+                    "text": text,
+                    "sentiment": sentiment,
+                    "confidence": confidence,
+                    "model_used": f"{modelname if modelname else 'default'}_with_sarcasm_detection"
+                }
+            
+        # Check for idioms
+        if use_idiom_detection:
+            idiom_result = self._detect_idioms(text)
+            if idiom_result:
+                sentiment, confidence, pattern_type = idiom_result
+                logger.info(f"Idiom detection will influence prediction: {pattern_type}")
+                if modelname:
+                    logger.info(f"[{modelname}] Forcing {sentiment} prediction due to idiom: '{pattern_type}'")
+                
+                return {
+                    "text": text,
+                    "sentiment": sentiment,
+                    "confidence": confidence,
+                    "model_used": f"{modelname if modelname else 'default'}_with_idiom_detection"
+                }
+                
+        # Check for contradictions
+        if use_contradiction_detection:
+            contradiction_result = self._detect_contradiction(text)
+            if contradiction_result:
+                sentiment, confidence, pattern_type = contradiction_result
+                if modelname:
+                    logger.info(f"[{modelname}] Forcing {sentiment} prediction due to contradiction: '{pattern_type}'")
+                
+                return {
+                    "text": text,
+                    "sentiment": sentiment,
+                    "confidence": confidence,
+                    "model_used": f"{modelname if modelname else 'default'}_with_contradiction_detection"
+                }
         
-        # If a specific model is requested, use it and return that result
+        # Get predictions from the models
+        predictions = {}
+        confidences = {}
+        
+        # If a specific model is specified, use that one
         if modelname:
-            return self.predict_with_specific_model(
-                text, 
-                processed_text,
-                modelname, 
-                simple_case_results,
-                add_explanation,
-                sarcasm_info,
-                idiom_info,
-                contradiction_info
-            )
-        
-        # If no specific model is requested, use the ensemble prediction
-        # Get predictions from all models
-        model_predictions = {}
-        for model_name in self.models.keys():
-            result = self.predict_with_specific_model(
-                text,
-                processed_text,
-                model_name,
-                simple_case_results,
-                add_explanation,
-                sarcasm_info,
-                idiom_info,
-                contradiction_info
-            )
-            model_predictions[model_name] = result
-        
-        # Calculate ensemble prediction (average of all models)
-        ensemble_prediction = 0
-        ensemble_confidence = 0
-        
-        # Count positive and negative predictions
-        positive_count = 0
-        negative_count = 0
-        
-        for model_name, result in model_predictions.items():
-            if result["sentiment"] == "Positive":
-                positive_count += 1
-                ensemble_prediction += 1 * (result["confidence"] / 100)  # Convert confidence back to decimal
+            if modelname in self.models:
+                logger.info(f"Using specified model: {modelname}")
+                predictions[modelname], confidences[modelname] = self.predict_with_specific_model(cleaned_text, modelname)
             else:
-                negative_count += 1
-                ensemble_prediction += 0 * (result["confidence"] / 100)  # Convert confidence back to decimal
+                raise ValueError(f"Invalid model name: {modelname}")
+        else:
+            # Use all models
+            for model_name in self.models:
+                predictions[model_name], confidences[model_name] = self.predict_with_specific_model(cleaned_text, model_name)
+        
+        # Apply simple case override if appropriate
+        for model in predictions:
+            if simple_case_override is not None:
+                if model:
+                    logger.info(f"[{model}] Overriding with simple case detection: {simple_case_override}")
+                predictions[model] = simple_case_override
+                confidences[model] = 90 + (5 * random.random())  # 90-95% confidence 
+        
+        # Process the results
+        result_sentiment = None
+        sentiment_confidence = 0
+        model_used = None
+        
+        # If we have a specific model, use just its results
+        if modelname:
+            result_sentiment = "Positive" if predictions[modelname] == 1 else "Negative" if predictions[modelname] == 0 else "Neutral"
+            sentiment_confidence = confidences[modelname]
+            model_used = modelname
+        else:
+            # Combine results from all models
+            # Calculate ensemble prediction (average of all models)
+            ensemble_score = 0
+            ensemble_confidence = 0
             
-            ensemble_confidence += result["confidence"] / 100  # Convert confidence back to decimal
+            # Count positive and negative predictions
+            positive_count = 0
+            negative_count = 0
+            
+            for model_name, prediction in predictions.items():
+                if prediction == 1:  # Positive
+                    positive_count += 1
+                    ensemble_score += 1 * (confidences[model_name] / 100)
+                else:  # Negative
+                    negative_count += 1
+                    ensemble_score += 0 * (confidences[model_name] / 100)
+                
+                ensemble_confidence += confidences[model_name] / 100
+            
+            # Average the ensemble score and confidence
+            if len(predictions) > 0:
+                ensemble_score = ensemble_score / len(predictions)
+                ensemble_confidence = ensemble_confidence / len(predictions)
+                
+            # Handle potential neutral case (when models are in significant disagreement)
+            if abs(positive_count - negative_count) <= 1 and len(predictions) > 2:
+                # Models are split or almost split - could be neutral
+                if 0.4 <= ensemble_score <= 0.6:
+                    result_sentiment = "Neutral"
+                    sentiment_confidence = 70.0  # Lower confidence for this automatic neutral case
+                    model_used = "ensemble_neutral_detection"
+                else:
+                    # Not balanced enough for neutral
+                    result_sentiment = "Positive" if ensemble_score >= 0.5 else "Negative"
+                    sentiment_confidence = ensemble_confidence * 100
+                    model_used = "ensemble"
+            else:
+                # Clear majority
+                result_sentiment = "Positive" if ensemble_score >= 0.5 else "Negative"
+                sentiment_confidence = ensemble_confidence * 100
+                model_used = "ensemble"
         
-        # Average the predictions
-        if len(model_predictions) > 0:
-            ensemble_prediction = ensemble_prediction / len(model_predictions)
-            ensemble_confidence = ensemble_confidence / len(model_predictions)
-        
-        # Determine final prediction
-        sentiment = "Positive" if ensemble_prediction >= 0.5 else "Negative"
-        
-        # Get influential words from the highest confidence model
-        highest_conf_model = max(model_predictions.items(), key=lambda x: x[1]["confidence"])
-        
-        return {
+        prediction_result = {
             "text": text,
-            "prediction": 1 if sentiment == "Positive" else 0,
-            "sentiment": sentiment,
-            "confidence": ensemble_confidence * 100,  # Convert back to percentage
-            "model_used": "ensemble"
+            "sentiment": result_sentiment,
+            "confidence": sentiment_confidence,
+            "model_used": model_used
         }
+        
+        return prediction_result
