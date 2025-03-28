@@ -1,10 +1,10 @@
 {
   "naive_bayes": {
-    "overall_pass_rate": 75.0,
+    "overall_pass_rate": 81.25,
     "category_pass_rates": {
       "negation": {
-        "pass_rate": 71.42857142857143,
-        "count": "10/14"
+        "pass_rate": 78.57142857142857,
+        "count": "11/14"
       },
       "contrast": {
         "pass_rate": 71.42857142857143,
@@ -115,7 +115,7 @@
         "expected": "Positive",
         "predicted": "Positive",
         "confidence": 85.0,
-        "model_used": "naive_bayes_idiom_detection",
+        "model_used": "naive_bayes_conclusion_marker",
         "passed": true
       },
       {
@@ -302,28 +302,28 @@
         "test_case": "Mixed sentiment with explicit conclusion",
         "text": "While I loved the graphics, hated the story, and felt neutral about the acting, overall I enjoyed it.",
         "expected": "Positive",
-        "predicted": "Neutral",
-        "confidence": 75.0,
-        "model_used": "naive_bayes_with_neutral_detection",
-        "passed": false
+        "predicted": "Positive",
+        "confidence": 90.0,
+        "model_used": "naive_bayes_conclusion_marker",
+        "passed": true
       },
       {
         "test_case": "Mixed sentiment with explicit negative conclusion",
         "text": "Though some parts were incredible, others were horrible, but ultimately I was disappointed.",
         "expected": "Negative",
-        "predicted": "Neutral",
-        "confidence": 75.0,
-        "model_used": "naive_bayes_with_neutral_detection",
-        "passed": false
+        "predicted": "Negative",
+        "confidence": 90.0,
+        "model_used": "naive_bayes_conclusion_marker",
+        "passed": true
       }
     ]
   },
   "logistic_regression": {
-    "overall_pass_rate": 75.0,
+    "overall_pass_rate": 81.25,
     "category_pass_rates": {
       "negation": {
-        "pass_rate": 71.42857142857143,
-        "count": "10/14"
+        "pass_rate": 78.57142857142857,
+        "count": "11/14"
       },
       "contrast": {
         "pass_rate": 71.42857142857143,
@@ -434,7 +434,7 @@
         "expected": "Positive",
         "predicted": "Positive",
         "confidence": 85.0,
-        "model_used": "logistic_regression_idiom_detection",
+        "model_used": "logistic_regression_conclusion_marker",
         "passed": true
       },
       {
@@ -621,19 +621,19 @@
         "test_case": "Mixed sentiment with explicit conclusion",
         "text": "While I loved the graphics, hated the story, and felt neutral about the acting, overall I enjoyed it.",
         "expected": "Positive",
-        "predicted": "Neutral",
-        "confidence": 75.0,
-        "model_used": "logistic_regression_with_neutral_detection",
-        "passed": false
+        "predicted": "Positive",
+        "confidence": 90.0,
+        "model_used": "logistic_regression_conclusion_marker",
+        "passed": true
       },
       {
         "test_case": "Mixed sentiment with explicit negative conclusion",
         "text": "Though some parts were incredible, others were horrible, but ultimately I was disappointed.",
         "expected": "Negative",
-        "predicted": "Neutral",
-        "confidence": 75.0,
-        "model_used": "logistic_regression_with_neutral_detection",
-        "passed": false
+        "predicted": "Negative",
+        "confidence": 90.0,
+        "model_used": "logistic_regression_conclusion_marker",
+        "passed": true
       }
     ]
   }
