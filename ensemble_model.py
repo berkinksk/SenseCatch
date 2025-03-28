@@ -1421,23 +1421,57 @@ class SentimentEnsemble:
             }
         
         if sarcasm_info:
-            logger.info(f"Sarcasm detected ({sarcasm_info[2]}): returning {sarcasm_info[0]} with {sarcasm_info[1]}% confidence")
-            return {
-                "text": text,
-                "sentiment": sarcasm_info[0],
-                "confidence": sarcasm_info[1],
-                "model_used": f"{model_name}_sarcasm_detection"
-            }
+            # Check if sarcasm_info is a dictionary or tuple
+            if isinstance(sarcasm_info, dict):
+                if sarcasm_info.get("sarcasm_detected", False):
+                    sentiment = "Negative"  # Default for sarcasm
+                    if sarcasm_info.get("force_sentiment") == "positive":
+                        sentiment = "Positive"
+                    # Default confidence of 85% if not specified
+                    confidence = 85.0
+                    sarcasm_type = sarcasm_info.get("sarcasm_type", "unknown")
+                    logger.info(f"Sarcasm detected ({sarcasm_type}): returning {sentiment} with {confidence}% confidence")
+                    return {
+                        "text": text,
+                        "sentiment": sentiment,
+                        "confidence": confidence,
+                        "model_used": f"{model_name}_sarcasm_detection"
+                    }
+            elif isinstance(sarcasm_info, tuple) and len(sarcasm_info) >= 3:
+                logger.info(f"Sarcasm detected ({sarcasm_info[2]}): returning {sarcasm_info[0]} with {sarcasm_info[1]}% confidence")
+                return {
+                    "text": text,
+                    "sentiment": sarcasm_info[0],
+                    "confidence": sarcasm_info[1],
+                    "model_used": f"{model_name}_sarcasm_detection"
+                }
             
         if idiom_info:
-            logger.info(f"Idiom detected ({idiom_info[2]}): returning {idiom_info[0]} with {idiom_info[1]}% confidence")
-            return {
-                "text": text,
-                "sentiment": idiom_info[0],
-                "confidence": idiom_info[1],
-                "model_used": f"{model_name}_idiom_detection"
-            }
-            
+            # Check if idiom_info is a dictionary or tuple
+            if isinstance(idiom_info, dict):
+                if idiom_info.get("idiom_detected", False):
+                    sentiment = "Negative"  # Default
+                    if idiom_info.get("force_sentiment") == "positive":
+                        sentiment = "Positive"
+                    # Default confidence of 85% if not specified
+                    confidence = 85.0
+                    idiom_type = idiom_info.get("idiom_type", "unknown")
+                    logger.info(f"Idiom detected ({idiom_type}): returning {sentiment} with {confidence}% confidence")
+                    return {
+                        "text": text,
+                        "sentiment": sentiment,
+                        "confidence": confidence,
+                        "model_used": f"{model_name}_idiom_detection"
+                    }
+            elif isinstance(idiom_info, tuple) and len(idiom_info) >= 3:
+                logger.info(f"Idiom detected ({idiom_info[2]}): returning {idiom_info[0]} with {idiom_info[1]}% confidence")
+                return {
+                    "text": text,
+                    "sentiment": idiom_info[0],
+                    "confidence": idiom_info[1],
+                    "model_used": f"{model_name}_idiom_detection"
+                }
+        
         if contradiction_info:
             # Check if contradiction_info is a dictionary or tuple
             if isinstance(contradiction_info, dict):
