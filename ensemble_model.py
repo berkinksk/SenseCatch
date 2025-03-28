@@ -1379,8 +1379,9 @@ class SentimentEnsemble:
         return None
         
     def predict_with_specific_model(self, text, model_name, sarcasm_info=None, idiom_info=None, contradiction_info=None):
-        """Predict sentiment using a specific model."""
-        
+        """
+        Make a prediction using a specific model.
+        """
         # Set default values if not provided
         if sarcasm_info is None:
             sarcasm_info = self._detect_sarcasm(text)
@@ -1402,20 +1403,64 @@ class SentimentEnsemble:
             last_sentiment = self._get_sentiment_after_contrast(text)
             if last_sentiment:
                 logger.info(f"Forcing sentiment to {last_sentiment} based on text after contrast marker")
-                return last_sentiment, 85.0
+                return {
+                    "text": text,
+                    "sentiment": last_sentiment,
+                    "confidence": 85.0,
+                    "model_used": f"{model_name}_restaurant_contrast"
+                }
         
-        # Apply simple case overrides if relevant
+        # Special case for empty text
+        if not text or len(text.strip()) == 0:
+            logger.info("Empty text detected, returning Neutral with 50% confidence")
+            return {
+                "text": text,
+                "sentiment": "Neutral",
+                "confidence": 50.0,
+                "model_used": f"{model_name}_empty_text"
+            }
+        
         if sarcasm_info:
             logger.info(f"Sarcasm detected ({sarcasm_info[2]}): returning {sarcasm_info[0]} with {sarcasm_info[1]}% confidence")
-            return sarcasm_info[0], sarcasm_info[1]
+            return {
+                "text": text,
+                "sentiment": sarcasm_info[0],
+                "confidence": sarcasm_info[1],
+                "model_used": f"{model_name}_sarcasm_detection"
+            }
             
         if idiom_info:
             logger.info(f"Idiom detected ({idiom_info[2]}): returning {idiom_info[0]} with {idiom_info[1]}% confidence")
-            return idiom_info[0], idiom_info[1]
+            return {
+                "text": text,
+                "sentiment": idiom_info[0],
+                "confidence": idiom_info[1],
+                "model_used": f"{model_name}_idiom_detection"
+            }
             
         if contradiction_info:
-            logger.info(f"Contradiction detected ({contradiction_info[2]}): returning {contradiction_info[0]} with {contradiction_info[1]}% confidence")
-            return contradiction_info[0], contradiction_info[1]
+            # Check if contradiction_info is a dictionary or tuple
+            if isinstance(contradiction_info, dict):
+                if contradiction_info.get("contradiction_detected", False):
+                    sentiment = "Positive" if contradiction_info.get("force_sentiment") == "positive" else "Negative"
+                    # Default confidence of 85% if not specified
+                    confidence = 85.0
+                    phrase = contradiction_info.get("detected_phrase", "unknown")
+                    logger.info(f"Contradiction detected ({phrase}): returning {sentiment} with {confidence}% confidence")
+                    return {
+                        "text": text,
+                        "sentiment": sentiment,
+                        "confidence": confidence,
+                        "model_used": f"{model_name}_contradiction_detection"
+                    }
+            elif isinstance(contradiction_info, tuple) and len(contradiction_info) >= 3:
+                logger.info(f"Contradiction detected ({contradiction_info[2]}): returning {contradiction_info[0]} with {contradiction_info[1]}% confidence")
+                return {
+                    "text": text,
+                    "sentiment": contradiction_info[0],
+                    "confidence": contradiction_info[1],
+                    "model_used": f"{model_name}_contradiction_detection"
+                }
         
         # Check for simple case results before using the model
         simple_result = self._handle_simple_cases(text)
@@ -1423,21 +1468,36 @@ class SentimentEnsemble:
             is_simple, sentiment, confidence = simple_result
             if is_simple and confidence >= 80.0:
                 logger.info(f"Simple case detected: returning {sentiment} with {confidence}% confidence")
-                return sentiment, confidence
+                return {
+                    "text": text,
+                    "sentiment": sentiment,
+                    "confidence": confidence,
+                    "model_used": f"{model_name}_simple_case"
+                }
         
         # Use the model
         try:
             # Get the appropriate model and vectorizer
             if model_name not in self.models:
                 logger.error(f"Model {model_name} not found in available models: {list(self.models.keys())}")
-                return "Neutral", 50.0
+                return {
+                    "text": text,
+                    "sentiment": "Neutral",
+                    "confidence": 50.0,
+                    "model_used": f"{model_name}_not_found"
+                }
                 
             model = self.models[model_name]
             vectorizer = self.vectorizers.get(model_name)
             
             if not vectorizer:
                 logger.error(f"Vectorizer for {model_name} not found")
-                return "Neutral", 50.0
+                return {
+                    "text": text,
+                    "sentiment": "Neutral",
+                    "confidence": 50.0,
+                    "model_used": f"{model_name}_no_vectorizer"
+                }
             
             # Process text
             processed_text = self._preprocess_text(text)
@@ -1474,12 +1534,22 @@ class SentimentEnsemble:
                 probability = 70.0  # Default confidence if predict_proba not available
                 
             sentiment = self._map_prediction_to_sentiment(prediction)
-            return sentiment, probability
+            return {
+                "text": text,
+                "sentiment": sentiment,
+                "confidence": probability,
+                "model_used": model_name
+            }
             
         except Exception as e:
             logger.error(f"Error predicting sentiment with {model_name}: {str(e)}")
             logger.exception(e)
-            return "Neutral", 50.0
+            return {
+                "text": text,
+                "sentiment": "Neutral",
+                "confidence": 50.0,
+                "model_used": f"{model_name}_error"
+            }
 
     def _detect_neutral_sentiment(self, text):
         """
