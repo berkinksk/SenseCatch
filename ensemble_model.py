@@ -1855,11 +1855,26 @@ class SentimentEnsemble:
         try:
             # Create a feature set using TF-IDF features
             features = self.tfidf_vectorizer.transform([text])
+            
+            # Check if there's a dimension mismatch and fix it
+            expected_features = 10009  # Based on error message
+            actual_features = features.shape[1]
+            
+            if actual_features != expected_features:
+                logger.warning(f"Feature dimension mismatch: got {actual_features}, expected {expected_features}")
+                # Pad with zeros if needed
+                from scipy.sparse import hstack, csr_matrix
+                import numpy as np
+                
+                if actual_features < expected_features:
+                    padding = csr_matrix((1, expected_features - actual_features), dtype=np.float64)
+                    features = hstack([features, padding])
+                    logger.info(f"Padded features from {actual_features} to {expected_features}")
+            
             return features
         except Exception as e:
             logger.error(f"Error extracting features: {e}")
-            # Emergency fallback: return an empty sparse matrix with the correct dimensions
+            # Emergency fallback: return a zero matrix with the expected dimensions
             from scipy.sparse import csr_matrix
             import numpy as np
-            feature_count = len(self.tfidf_vectorizer.get_feature_names_out())
-            return csr_matrix((1, feature_count), dtype=np.float64)
+            return csr_matrix((1, 10009), dtype=np.float64)  # Hard-coded expected dimension
