@@ -12,6 +12,7 @@ import nltk
 from nltk.tree import Tree  # Explicitly import Tree for named entity checking
 from scipy.sparse import hstack, csr_matrix
 import random
+import scipy
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -1377,202 +1378,108 @@ class SentimentEnsemble:
         # No contradiction detected
         return None
         
-    def predict_with_specific_model(self, original_text, processed_text, modelname, simple_case_results={}, 
-                                   add_explanation=False, sarcasm_info=None, idiom_info=None, contradiction_info=None):
-        """Make predictions using a specific model."""
-        # Default values if not provided
+    def predict_with_specific_model(self, text, model_name, sarcasm_info=None, idiom_info=None, contradiction_info=None):
+        """Predict sentiment using a specific model."""
+        
+        # Set default values if not provided
         if sarcasm_info is None:
-            sarcasm_info = {"sarcasm_detected": False}
+            sarcasm_info = self._detect_sarcasm(text)
+        
         if idiom_info is None:
-            idiom_info = {"idiom_detected": False}
+            idiom_info = self._detect_idioms(text)
+            
         if contradiction_info is None:
-            contradiction_info = {"contradiction_detected": False}
+            contradiction_info = self._detect_contradiction(text)
         
-        # Check for restaurant review with contrast markers
-        restaurant_info = {"is_restaurant": False}
-        is_restaurant, food_count, service_count = self._is_restaurant_review(original_text)
+        # Check if this is a restaurant review with contrast markers
+        is_restaurant = self._is_restaurant_review(text)
+        has_contrast = self._contains_contrast_markers(text)
         
-        # Process contrast markers for more nuanced understanding
-        contrast_info = self.process_contrast_markers(original_text)
+        # If it's a restaurant review with contrast, check if we need to force the sentiment
+        if is_restaurant and has_contrast:
+            logger.info(f"Restaurant review with contrast detected: '{text}'")
+            # Get the last part sentiment (after contrast marker)
+            last_sentiment = self._get_sentiment_after_contrast(text)
+            if last_sentiment:
+                logger.info(f"Forcing sentiment to {last_sentiment} based on text after contrast marker")
+                return last_sentiment, 85.0
         
-        # Special handling for restaurant reviews with contrast markers
-        if is_restaurant and contrast_info.get("has_contrast", False):
-            restaurant_info = {
-                "is_restaurant": True,
-                "food_count": food_count,
-                "service_count": service_count,
-                "has_contrast": True,
-                "contrast_marker": contrast_info.get("contrast_marker", ""),
-                "has_forced_positive": contrast_info.get("has_forced_positive", False),
-                "has_forced_negative": contrast_info.get("has_forced_negative", False)
-            }
-            logger.info(f"Restaurant review with contrast marker '{contrast_info.get('contrast_marker')}' detected")
+        # Apply simple case overrides if relevant
+        if sarcasm_info:
+            logger.info(f"Sarcasm detected ({sarcasm_info[2]}): returning {sarcasm_info[0]} with {sarcasm_info[1]}% confidence")
+            return sarcasm_info[0], sarcasm_info[1]
             
-            # If we have a strong restaurant pattern that forces sentiment, respect it
-            if contrast_info.get("has_forced_positive", False):
-                logger.info(f"[{modelname}] Restaurant review with forced POSITIVE sentiment")
+        if idiom_info:
+            logger.info(f"Idiom detected ({idiom_info[2]}): returning {idiom_info[0]} with {idiom_info[1]}% confidence")
+            return idiom_info[0], idiom_info[1]
+            
+        if contradiction_info:
+            logger.info(f"Contradiction detected ({contradiction_info[2]}): returning {contradiction_info[0]} with {contradiction_info[1]}% confidence")
+            return contradiction_info[0], contradiction_info[1]
+        
+        # Check for simple case results before using the model
+        simple_result = self._handle_simple_cases(text)
+        if simple_result:
+            is_simple, sentiment, confidence = simple_result
+            if is_simple and confidence >= 80.0:
+                logger.info(f"Simple case detected: returning {sentiment} with {confidence}% confidence")
+                return sentiment, confidence
+        
+        # Use the model
+        try:
+            # Get the appropriate model and vectorizer
+            if model_name not in self.models:
+                logger.error(f"Model {model_name} not found in available models: {list(self.models.keys())}")
+                return "Neutral", 50.0
                 
-        # Get the model to use
-        model = self.models[modelname]
-        
-        # Extract features for the model
-        features = self._extract_features(processed_text)
-        
-        # Make prediction
-        prediction = model.predict(features)[0]
-        confidence = max(0.55, np.max(model.predict_proba(features)[0]))
-        
-        # Default model name
-        model_name = modelname
-        
-        # Check for special overrides from restaurant + contrast detection (highest priority)
-        if restaurant_info["is_restaurant"] and restaurant_info["has_contrast"]:
-            # If restaurant pattern detection found a forced sentiment, apply it
-            if restaurant_info["has_forced_positive"]:
-                logger.info(f"[{modelname}] Forcing POSITIVE prediction for restaurant review with contrast marker")
-                prediction = 1  # Force positive
-                confidence = max(0.80, confidence)  # Higher confidence for food quality statements
-                model_name = f"{modelname}_with_restaurant_analysis"
-            elif restaurant_info["has_forced_negative"]:
-                logger.info(f"[{modelname}] Forcing NEGATIVE prediction for restaurant review with contrast marker")
-                prediction = 0  # Force negative
-                confidence = max(0.82, confidence)  # Higher confidence for food quality statements
-                model_name = f"{modelname}_with_restaurant_analysis"
-            elif contrast_info.get("has_contrast", False):
-                # Use weighted prediction for contrast cases without forced sentiment
-                logger.info(f"[{modelname}] Using weighted contrast prediction for restaurant review")
+            model = self.models[model_name]
+            vectorizer = self.vectorizers.get(model_name)
+            
+            if not vectorizer:
+                logger.error(f"Vectorizer for {model_name} not found")
+                return "Neutral", 50.0
+            
+            # Process text
+            processed_text = self._preprocess_text(text)
+            
+            # Extract features using the appropriate vectorizer
+            features = vectorizer.transform([processed_text])
+            
+            # Get the expected feature dimensions for this model
+            expected_dim = model.coef_.shape[1] if hasattr(model, 'coef_') else None
+            
+            if expected_dim and features.shape[1] != expected_dim:
+                logger.warning(f"Feature dimension mismatch: model expects {expected_dim}, but got {features.shape[1]}. Padding with zeros.")
+                # Create padding matrix with zeros
+                padding_shape = (features.shape[0], expected_dim - features.shape[1])
                 
-                # Apply separate analysis to parts before and after contrast marker
-                try:
-                    before_features = self._extract_features(contrast_info["before"])
-                    after_features = self._extract_features(contrast_info["after"])
-                    
-                    before_pred = model.predict(before_features)[0]
-                    after_pred = model.predict(after_features)[0]
-                    
-                    before_weight = contrast_info.get("before_weight", 0.4)
-                    after_weight = contrast_info.get("after_weight", 0.6)
-                    
-                    # In restaurant reviews, the food quality often matters more
-                    if food_count > 0 and "food" in contrast_info["after"].lower():
-                        logger.info(f"Further emphasizing after-part containing food references")
-                        # If after part contains food references, give it even more weight
-                        total = before_weight + after_weight
-                        before_weight = before_weight * 0.7  # Reduce before weight
-                        after_weight = total - before_weight  # Increase after weight
-                    
-                    # Do weighted combination (considering 1=positive, 0=negative)
-                    weighted_score = (before_pred * before_weight) + (after_pred * after_weight)
-                    
-                    # Determine final prediction
-                    if weighted_score >= 0.5:
-                        prediction = 1
-                        confidence = max(0.6, weighted_score) 
-                    else:
-                        prediction = 0
-                        confidence = max(0.6, 1 - weighted_score)
-                    
-                    # Adjust confidence based on the difference in weights
-                    confidence = min(confidence + abs(before_weight - after_weight) * 0.1, 0.95)
-                    
-                    model_name = f"{modelname}_with_restaurant_contrast_analysis"
-                    logger.info(f"Restaurant contrast analysis: weighted score={weighted_score:.2f}, confidence={confidence:.2f}")
-                except Exception as e:
-                    logger.error(f"Error in restaurant contrast analysis: {e}")
-        
-        # Check for special overrides from sarcasm detection
-        elif sarcasm_info["sarcasm_detected"]:
-            logger.info(f"Sarcasm detection will influence prediction: {sarcasm_info['sarcasm_type']}")
+                # Only pad if we need to add features (dimensions are smaller than expected)
+                if padding_shape[1] > 0:
+                    padding = scipy.sparse.csr_matrix(padding_shape)
+                    features = scipy.sparse.hstack([features, padding])
+                else:
+                    # If we have too many features, trim to expected size
+                    features = features[:, :expected_dim]
             
-            if sarcasm_info["force_sentiment"] == "positive":
-                logger.info(f"[{modelname}] Forcing POSITIVE prediction due to sarcasm: '{sarcasm_info['sarcastic_phrase']}'")
-                prediction = 1  # Force positive
-                confidence = max(0.7, confidence) + sarcasm_info["confidence_adjustment"]
-                confidence = min(confidence, 0.95)  # Cap at 0.95
-                model_name = f"{modelname}_with_sarcasm_detection"
-            elif sarcasm_info["force_sentiment"] == "negative":
-                logger.info(f"[{modelname}] Forcing NEGATIVE prediction due to sarcasm: '{sarcasm_info['sarcastic_phrase']}'")
-                prediction = 0  # Force negative
-                confidence = max(0.7, confidence) + sarcasm_info["confidence_adjustment"]
-                confidence = min(confidence, 0.95)  # Cap at 0.95
-                model_name = f"{modelname}_with_sarcasm_detection"
-        
-        # Check for idiom detection overrides
-        elif idiom_info["idiom_detected"]:
-            logger.info(f"Idiom detection will influence prediction: {idiom_info['idiom_type']}")
+            # Make prediction
+            prediction = model.predict(features)[0]
+            probability = 0.0
             
-            if idiom_info["force_sentiment"] == "positive":
-                logger.info(f"[{modelname}] Forcing POSITIVE prediction due to idiom: '{idiom_info['detected_idiom']}'")
-                prediction = 1  # Force positive
-                confidence = max(0.7, confidence) + idiom_info["confidence_adjustment"]
-                confidence = min(confidence, 0.95)  # Cap at 0.95
-                model_name = f"{modelname}_with_idiom_detection"
-            elif idiom_info["force_sentiment"] == "negative":
-                logger.info(f"[{modelname}] Forcing NEGATIVE prediction due to idiom: '{idiom_info['detected_idiom']}'")
-                prediction = 0  # Force negative
-                confidence = max(0.7, confidence) + idiom_info["confidence_adjustment"]
-                confidence = min(confidence, 0.95)  # Cap at 0.95
-                model_name = f"{modelname}_with_idiom_detection"
-        
-        # Check for special overrides from contradiction detection
-        elif contradiction_info["contradiction_detected"]:
-            if contradiction_info["force_sentiment"] == "positive":
-                logger.info(f"[{modelname}] Forcing POSITIVE prediction due to contradiction: '{contradiction_info['detected_phrase']}'")
-                prediction = 1  # Force positive
-                confidence = max(0.7, confidence) + contradiction_info["confidence_adjustment"]
-                confidence = min(confidence, 0.95)  # Cap at 0.95
-                model_name = f"{modelname}_with_contradiction_detection"
-            elif contradiction_info["force_sentiment"] == "negative":
-                logger.info(f"[{modelname}] Forcing NEGATIVE prediction due to contradiction: '{contradiction_info['detected_phrase']}'")
-                prediction = 0  # Force negative
-                confidence = max(0.7, confidence) + contradiction_info["confidence_adjustment"]
-                confidence = min(confidence, 0.95)  # Cap at 0.95
-                model_name = f"{modelname}_with_contradiction_detection"
+            # Get probability if available
+            if hasattr(model, 'predict_proba'):
+                probs = model.predict_proba(features)[0]
+                max_prob_index = np.argmax(probs)
+                probability = probs[max_prob_index] * 100
             else:
-                # Process the second part primarily if the reversal is unclear
-                second_part = contradiction_info["second_part"]
-                if second_part:
-                    # Create a clean version of the second part
-                    clean_second = self.clean_text(second_part)["processed_text"]
-                    # Use this for prediction if possible
-                    if len(clean_second.split()) > 2:  # If the second part has enough content
-                        logger.info(f"[{modelname}] Using second part after contradiction for prediction: '{second_part}'")
-                        # Re-predict with the second part
-                        features_second = self._extract_features(clean_second)
-                        prediction_second = model.predict(features_second)[0]
-                        confidence_second = max(0.6, np.max(model.predict_proba(features_second)[0]))
-                        prediction = prediction_second
-                        confidence = confidence_second
-                        model_name = f"{modelname}_with_contradiction_detection"
-        
-        # Only now consider the results from simple case detection as a possible override
-        if simple_case_results.get("is_simple_case", False):
-            simple_case_prediction = simple_case_results.get("prediction")
-            simple_case_confidence = simple_case_results.get("confidence", 0.95)
+                probability = 70.0  # Default confidence if predict_proba not available
+                
+            sentiment = self._map_prediction_to_sentiment(prediction)
+            return sentiment, probability
             
-            # If the simple case confidence is higher than model confidence by a significant margin,
-            # use the simple case result
-            if simple_case_confidence > confidence + 0.15:
-                prediction = simple_case_prediction
-                confidence = simple_case_confidence
-                logger.info(f"[{modelname}] Overriding with simple case detection: {prediction}")
-                model_name = f"{modelname} with pattern override"
-        
-        # Convert prediction to sentiment label
-        sentiment = "Positive" if prediction == 1 else "Negative"
-        
-        # Add a small random factor to ensure model independence
-        random_factor = random.uniform(0.01, 0.03)
-        confidence = min(confidence + random_factor, 0.95)
-        
-        prediction_result = {
-            "text": original_text,
-            "sentiment": sentiment,
-            "confidence": confidence * 100,  # Convert to percentage
-            "model_used": model_name
-        }
-        
-        return prediction_result
+        except Exception as e:
+            logger.error(f"Error predicting sentiment with {model_name}: {str(e)}")
+            logger.exception(e)
+            return "Neutral", 50.0
 
     def _detect_neutral_sentiment(self, text):
         """
@@ -1726,8 +1633,7 @@ class SentimentEnsemble:
             if modelname in self.models:
                 logger.info(f"Using specified model: {modelname}")
                 model_predictions[modelname] = self.predict_with_specific_model(
-                    text, cleaned_text, modelname, 
-                    simple_case_results=simple_case_results,
+                    text, modelname,
                     sarcasm_info=sarcasm_info,
                     idiom_info=idiom_info,
                     contradiction_info=contradiction_info
@@ -1738,8 +1644,7 @@ class SentimentEnsemble:
             # Use all models
             for model_name in self.models:
                 model_predictions[model_name] = self.predict_with_specific_model(
-                    text, cleaned_text, model_name,
-                    simple_case_results=simple_case_results,
+                    text, model_name,
                     sarcasm_info=sarcasm_info,
                     idiom_info=idiom_info,
                     contradiction_info=contradiction_info
@@ -1855,26 +1760,96 @@ class SentimentEnsemble:
         try:
             # Create a feature set using TF-IDF features
             features = self.tfidf_vectorizer.transform([text])
-            
-            # Check if there's a dimension mismatch and fix it
-            expected_features = 10009  # Based on error message
-            actual_features = features.shape[1]
-            
-            if actual_features != expected_features:
-                logger.warning(f"Feature dimension mismatch: got {actual_features}, expected {expected_features}")
-                # Pad with zeros if needed
-                from scipy.sparse import hstack, csr_matrix
-                import numpy as np
-                
-                if actual_features < expected_features:
-                    padding = csr_matrix((1, expected_features - actual_features), dtype=np.float64)
-                    features = hstack([features, padding])
-                    logger.info(f"Padded features from {actual_features} to {expected_features}")
-            
             return features
         except Exception as e:
             logger.error(f"Error extracting features: {e}")
-            # Emergency fallback: return a zero matrix with the expected dimensions
+            # Emergency fallback: return a zero matrix with the dimensions 
+            # matching the vectorizer's vocabulary size
             from scipy.sparse import csr_matrix
             import numpy as np
-            return csr_matrix((1, 10009), dtype=np.float64)  # Hard-coded expected dimension
+            feature_count = len(self.tfidf_vectorizer.get_feature_names_out())
+            return csr_matrix((1, feature_count), dtype=np.float64)
+
+    def _map_prediction_to_sentiment(self, prediction):
+        """Map numerical prediction to sentiment label."""
+        if prediction == 1:
+            return "Positive"
+        elif prediction == 0:
+            return "Negative"
+        else:
+            return "Neutral"
+
+    def _contains_contrast_markers(self, text):
+        """
+        Check if text contains any contrast markers like 'but', 'although', 'however', etc.
+        Returns a boolean indicating if contrast markers are present.
+        """
+        text = text.lower()
+        contrast_markers = [
+            'but ', 'although ', 'though ', 'however ', 'despite ', 'yet ', 
+            'nevertheless ', 'regardless ', 'even though ', 'notwithstanding ', 'in spite of '
+        ]
+        
+        for marker in contrast_markers:
+            if marker in text:
+                logger.info(f"Contrast marker '{marker.strip()}' found in text")
+                return True
+                
+        return False
+        
+    def _get_sentiment_after_contrast(self, text):
+        """
+        Analyze the sentiment of text after contrast markers.
+        Returns the sentiment (Positive/Negative) or None if no clear sentiment is detected.
+        """
+        # Process contrast markers to get separate parts
+        contrast_info = self.process_contrast_markers(text)
+        
+        if not contrast_info.get("has_contrast", False):
+            return None
+            
+        # If we have forced sentiment from the contrast analysis, use it
+        if contrast_info.get("has_forced_positive", False):
+            return "Positive"
+        elif contrast_info.get("has_forced_negative", False):
+            return "Negative"
+            
+        # Otherwise check simple indicators in the after-text
+        after_text = contrast_info.get("after", "")
+        
+        # Count positive and negative terms
+        positive_count = 0
+        negative_count = 0
+        
+        for term in self.VERY_POSITIVE_PHRASES:
+            if term.lower() in after_text.lower():
+                positive_count += 1
+                
+        for term in self.VERY_NEGATIVE_PHRASES:
+            if term.lower() in after_text.lower():
+                negative_count += 1
+                
+        # If there's a clear difference, determine sentiment
+        if positive_count > negative_count + 1:
+            return "Positive"
+        elif negative_count > positive_count + 1:
+            return "Negative"
+            
+        # No clear sentiment detected
+        return None
+
+    def _preprocess_text(self, text):
+        """
+        Preprocess text for feature extraction.
+        This is a simplified version that uses our clean_text method.
+        """
+        try:
+            # First run our standard text cleaning to handle entities, movie titles, etc.
+            cleaned_text, negation_markers, special_info = self.clean_text(text)
+            
+            # Return the processed text (which is the first element of the tuple)
+            return cleaned_text
+        except Exception as e:
+            logger.error(f"Error in _preprocess_text: {e}")
+            # In case of error, return the original text converted to lowercase
+            return text.lower()
