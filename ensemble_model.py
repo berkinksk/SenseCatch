@@ -81,9 +81,19 @@ class SentimentEnsemble:
         }
         # Add common movie title list for entity recognition
         self.movie_titles = self._load_movie_titles()
-        # Add this line to the __init__ method before self._load_models()
-        self.movie_titles = self._load_movie_titles()
+        # Initialize tfidf_vectorizer
+        self.tfidf_vectorizer = None
         self._load_models()
+        
+        # Ensure we have a tfidf_vectorizer by setting it from the loaded vectorizers
+        if 'logistic_regression' in self.vectorizers:
+            self.tfidf_vectorizer = self.vectorizers['logistic_regression']
+            logger.info("Using logistic_regression vectorizer as tfidf_vectorizer")
+        elif 'naive_bayes' in self.vectorizers:
+            self.tfidf_vectorizer = self.vectorizers['naive_bayes']
+            logger.info("Using naive_bayes vectorizer as tfidf_vectorizer")
+        else:
+            logger.error("No vectorizer found for feature extraction")
     
     def _load_movie_titles(self):
         """Load a comprehensive list of movie titles from multiple sources"""
@@ -747,66 +757,182 @@ class SentimentEnsemble:
                     strong_positive_markers = [
                         "good", "great", "excellent", "amazing", "fantastic", "wonderful", 
                         "enjoyed", "love", "loved", "best", "perfect", "delicious", "recommend",
-                        "worth", "impressive"
+                        "worth", "impressive", "tasty", "flavorful", "yummy", "delightful", 
+                        "satisfying", "mouthwatering", "scrumptious", "heavenly", "divine", 
+                        "superb", "outstanding", "stellar", "enjoyed", "impressed", "win",
+                        "pleasure", "surprisingly", "pleasantly", "favorite", "liked"
+                    ]
+                    
+                    strong_negative_markers = [
+                        "bad", "terrible", "awful", "horrible", "disgusting", "disappointing",
+                        "mediocre", "bland", "tasteless", "inedible", "overcooked", "undercooked",
+                        "stale", "rotten", "expensive", "overpriced", "poor", "worst", "trash",
+                        "garbage", "waste", "useless", "boring", "dull", "pointless", "hated"
                     ]
                     
                     # Added emphasis words that boost the effect of positive/negative terms
                     emphasis_words = [
                         "very", "extremely", "absolutely", "truly", "really", "definitely",
-                        "quite", "especially", "particularly", "exceptionally", "remarkably"
+                        "quite", "especially", "particularly", "exceptionally", "remarkably",
+                        "incredibly", "unbelievably", "surprisingly", "astonishingly", "totally",
+                        "completely", "entirely", "utterly", "thoroughly", "genuinely"
                     ]
                     
-                    # Counter for positive strong terms after contrast marker
+                    # Use our specialized restaurant detector
+                    is_restaurant, food_term_count, service_term_count = self._is_restaurant_review(text)
+                    
+                    # Counter for positive and negative strong terms after contrast marker
                     strong_pos_count = 0
+                    strong_neg_count = 0
                     
                     # Detect strong positive terms after contrast marker
                     after_words = after_text.lower().split()
                     for term in strong_positive_markers:
-                        if term in after_words:
+                        if term in after_text.lower():
                             strong_pos_count += 1
                             logger.info(f"Strong positive term after contrast: '{term}'")
                     
-                    # Check for emphasis + positive combinations (e.g., "absolutely delicious")
+                    # Detect strong negative terms after contrast marker
+                    for term in strong_negative_markers:
+                        if term in after_text.lower():
+                            strong_neg_count += 1
+                            logger.info(f"Strong negative term after contrast: '{term}'")
+                    
+                    # Detect terms in the before section
+                    before_pos_count = 0
+                    before_neg_count = 0
+                    for term in strong_positive_markers:
+                        if term in before_text.lower():
+                            before_pos_count += 1
+                    for term in strong_negative_markers:
+                        if term in before_text.lower():
+                            before_neg_count += 1
+                    
+                    # Special cases for opinion reversal
+                    trash_to_pleasure = re.search(r'(trash|terrible|awful|bad|boring).+(guilty pleasure|secretly enjoyed|actually (?:liked|enjoyed))', text.lower())
+                    if trash_to_pleasure and marker in ["but ", "however ", "yet ", "although "]:
+                        logger.info(f"Detected opinion reversal: negative to positive")
+                        before_weight = 0.1  # Greatly reduce the "trash" part weight
+                        after_weight = 0.9   # Strongly emphasize the "pleasure" part
+                        strong_pos_count += 1  # Add extra positive boost
+                    
+                    # Check for emphasis + positive/negative combinations (e.g., "absolutely delicious")
                     emphasis_pos_combinations = 0
-                    for i, word in enumerate(after_words[:-1]):
-                        if word in emphasis_words and after_words[i+1] in strong_positive_markers:
-                            emphasis_pos_combinations += 1
-                            logger.info(f"Emphasis + positive combination: '{word} {after_words[i+1]}'")
+                    emphasis_neg_combinations = 0
+                    
+                    for emphasis in emphasis_words:
+                        for pos_term in strong_positive_markers:
+                            if f"{emphasis} {pos_term}" in after_text.lower():
+                                emphasis_pos_combinations += 1
+                                logger.info(f"Emphasis + positive combination: '{emphasis} {pos_term}'")
+                        
+                        for neg_term in strong_negative_markers:
+                            if f"{emphasis} {neg_term}" in after_text.lower():
+                                emphasis_neg_combinations += 1
+                                logger.info(f"Emphasis + negative combination: '{emphasis} {neg_term}'")
                     
                     # Forced sentiment flags
                     has_forcing_positive = False
                     has_forcing_negative = False
                     
-                    # Special restaurant case detection
-                    is_restaurant_case = 'food' in after_text.lower() or 'restaurant' in text.lower()
+                    # Special cases for idiom detection in contrast markers
+                    idiom_patterns = [
+                        (r'guilty pleasure', True),       # positive
+                        (r'secretly enjoyed', True),      # positive
+                        (r'laughed more than', True),     # positive
+                        (r'surprisingly good', True),     # positive
+                        (r'waste of time', False),        # negative
+                        (r'wouldn\'t recommend', False),  # negative
+                    ]
                     
-                    # Enhanced "food was X" pattern detection - critical for restaurant reviews 
-                    food_adjective_pattern = re.search(r'food\s+was\s+(\w+)', after_text.lower())
-                    if food_adjective_pattern:
-                        adjective = food_adjective_pattern.group(1)
-                        if adjective in strong_positive_markers:
-                            logger.info(f"Special 'food was {adjective}' positive pattern detected")
+                    for pattern, is_positive in idiom_patterns:
+                        if re.search(pattern, after_text.lower()):
+                            logger.info(f"Idiom pattern '{pattern}' found after contrast marker")
+                            if is_positive:
+                                has_forcing_positive = True
+                                strong_pos_count += 2
+                            else:
+                                has_forcing_negative = True
+                                strong_neg_count += 2
+                    
+                    # Enhanced restaurant-specific pattern detection
+                    if is_restaurant:
+                        logger.info(f"Restaurant review detected with {food_term_count} food terms and {service_term_count} service terms")
+                        
+                        # Critical food quality patterns - high-impact on restaurant sentiment
+                        food_quality_patterns = [
+                            (r'food\s+was\s+(\w+)', strong_positive_markers, True),  # "food was excellent" → positive
+                            (r'food\s+was\s+(\w+)', strong_negative_markers, False),  # "food was terrible" → negative
+                            (r'(\w+)\s+food', strong_positive_markers, True),         # "delicious food" → positive
+                            (r'(\w+)\s+food', strong_negative_markers, False),        # "terrible food" → negative
+                            (r'meal\s+was\s+(\w+)', strong_positive_markers, True),   # "meal was excellent" → positive
+                            (r'meal\s+was\s+(\w+)', strong_negative_markers, False),  # "meal was terrible" → negative
+                        ]
+                        
+                        for pattern, term_list, is_positive in food_quality_patterns:
+                            matches = re.finditer(pattern, after_text.lower())
+                            for match in matches:
+                                adjective = match.group(1)
+                                if adjective in term_list:
+                                    logger.info(f"Critical restaurant pattern: '{match.group(0)}' → {'positive' if is_positive else 'negative'}")
+                                    if is_positive:
+                                        has_forcing_positive = True
+                                        strong_pos_count += 2  # Double weight for explicit food quality statements
+                                    else:
+                                        has_forcing_negative = True
+                                        strong_neg_count += 2  # Double weight for explicit food quality statements
+                        
+                        # Restaurant "despite/although/even though" + negative service + positive food = positive
+                        if (marker in ['despite ', 'although ', 'even though '] and 
+                            service_term_count >= 1 and 
+                            food_term_count >= 1 and 
+                            strong_pos_count > 0):
+                            # Example: "Despite the noisy atmosphere, the food was excellent"
+                            logger.info(f"Restaurant review with positive food despite negative service/ambiance")
                             has_forcing_positive = True
-                            strong_pos_count += 1
+                            before_weight = 0.25  # Greatly reduce weight of negative service aspects
+                            after_weight = 0.75   # Strongly emphasize food quality
                     
-                    # Check for positive/negative forcing based on the marker and the content after it
+                    # Strong opinion switches with "but" need special handling
                     if marker == 'but ' or marker == 'however ' or marker == 'yet ':
-                        # "but" usually emphasizes what comes after
-                        # Adjust weights to favor the after part more (60/40 split for typical "but")
-                        before_weight = 0.4
-                        after_weight = 0.6
+                        # Stronger negative before and positive after suggests a positive overall sentiment
+                        if before_neg_count > before_pos_count and strong_pos_count > 0:
+                            logger.info(f"Negative to positive opinion switch detected")
+                            before_weight = 0.3  # Reduce negative part weight
+                            after_weight = 0.7   # Emphasize positive part
+                            
+                            # If the after part has multiple positive terms or emphatic positive, 
+                            # force positive sentiment
+                            if strong_pos_count >= 1 or emphasis_pos_combinations > 0:
+                                logger.info(f"Strong positive expression after negative opinion - forcing positive")
+                                has_forcing_positive = True
                         
                         # For restaurant case with "but" followed by positive term about food, 
                         # the after part becomes even more important
-                        if is_restaurant_case and strong_pos_count > 0:
+                        if is_restaurant and strong_pos_count > 0:
                             logger.info(f"Restaurant case with positive food description detected")
-                            before_weight = 0.3  # Further reduce weight of before part
-                            after_weight = 0.7  # Strongly emphasize after part with food description
+                            before_weight = 0.25  # Further reduce weight of before part
+                            after_weight = 0.75   # Strongly emphasize after part with food description
                             
-                            # If we have "but the food was delicious" pattern, force positive
+                            # Restaurant specific forcing for "but the food was X" patterns
                             if strong_pos_count >= 1 or emphasis_pos_combinations > 0:
-                                logger.info(f"Restaurant with strong positive food terms - forcing positive signal")
+                                if food_term_count >= 1:
+                                    logger.info(f"Restaurant with strong positive food terms - forcing positive signal")
+                                    has_forcing_positive = True
+                            
+                            # If the after part has significantly more positive than negative terms, favor positive
+                            if (strong_pos_count - strong_neg_count) >= 2:
+                                logger.info(f"Restaurant review with strong positive balance after contrast")
                                 has_forcing_positive = True
+                        
+                        # Restaurant case with negative food sentiment overrides positive service
+                        elif is_restaurant and strong_neg_count > 0 and food_term_count >= 1:
+                            logger.info(f"Restaurant with negative food description - forcing negative signal")
+                            before_weight = 0.25
+                            after_weight = 0.75
+                            
+                            if strong_neg_count >= 1 or emphasis_neg_combinations > 0:
+                                has_forcing_negative = True
                         
                         # For other "but" with multiple strong positive terms, consider forcing positive
                         elif strong_pos_count >= 2 or emphasis_pos_combinations >= 1:
@@ -825,6 +951,19 @@ class SentimentEnsemble:
                             
                             # Log the adjustment
                             logger.info(f"Adjusted weights for positive after-text: before={before_weight:.2f}, after={after_weight:.2f}")
+                        
+                        # Similarly for strong negative patterns
+                        elif strong_neg_count >= 2 or emphasis_neg_combinations >= 1:
+                            logger.info(f"Multiple strong negative terms after 'but' - forcing negative signal")
+                            has_forcing_negative = True
+                            
+                            # Adjust weights for strong negative signals
+                            neg_factor = min(strong_neg_count * 0.05, 0.2)
+                            total = before_weight + after_weight
+                            before_weight = max(before_weight - neg_factor, 0.05)
+                            after_weight = total - before_weight
+                            
+                            logger.info(f"Adjusted weights for negative after-text: before={before_weight:.2f}, after={after_weight:.2f}")
                     
                     # Return the parts with weights and forcing flags
                     return {
@@ -837,8 +976,10 @@ class SentimentEnsemble:
                         "has_forced_positive": has_forcing_positive,
                         "has_forced_negative": has_forcing_negative,
                         "strong_positive_count": strong_pos_count,
-                        "emphasis_combinations": emphasis_pos_combinations,
-                        "is_restaurant_case": is_restaurant_case
+                        "strong_negative_count": strong_neg_count,
+                        "emphasis_pos_combinations": emphasis_pos_combinations,
+                        "emphasis_neg_combinations": emphasis_neg_combinations,
+                        "is_restaurant_case": is_restaurant
                     }
             
             # No contrast markers found
@@ -921,7 +1062,13 @@ class SentimentEnsemble:
             return text.lower().strip(), [], {'special_phrase_detected': False}
     
     def safety_check(self, text):
-        """Check if text contains potentially harmful/negative emotional content"""
+        """
+        Check if text contains potentially harmful/negative emotional content.
+        Returns:
+        - True: Text should be filtered (contains harmful content)
+        - False: Text is safe for analysis
+        - 0.5: Text has mild concerning content (used for confidence reduction)
+        """
         try:
             # Convert to lowercase for pattern matching
             text_lower = text.lower()
@@ -958,18 +1105,68 @@ class SentimentEnsemble:
                     logger.warning(f"Safety check: Concerning emotional content detected: '{text}'")
                     return True
             
-            # Common phrases that should be whitelisted (NOT blocked)
+            # EXPANDED: Common phrases that should be whitelisted (NOT blocked)
             whitelist_patterns = [
+                # Comparative expressions
                 r"rather watch paint dry",
                 r"rather see paint dry",
                 r"paint dry",
-                r"watching grass grow",
+                r"watch(?:ing)? grass grow",
                 r"wait for paint to dry",
+                r"watching wall",
+                r"watch(?:ing)? the wall",
+                r"water boil",
+                
+                # Common metaphorical expressions
                 r"bored to death",  # Figurative expression
                 r"dying to see",    # Figurative expression
-                r"killed it",       # Positive expression (did well)
+                r"dying for",       # Eager for something
+                r"dying of",        # Hyperbolic expression
+                r"kill(?:ed|ing)? (?:it|me|them|time)",  # Positive expression (did well)
                 r"dying of laughter",
-                r"died laughing"
+                r"died laughing",
+                r"laughed to death",
+                r"killing (?:me|time)",
+                r"mind-blowing",
+                r"blew my mind",
+                r"dead serious",
+                r"drop dead gorgeous",
+                
+                # Movie references
+                r"kill bill",
+                r"killing eve",
+                r"dead pool",
+                r"walking dead",
+                r"evil dead",
+                r"death wish",
+                r"death note",
+                
+                # Sarcasm and humor patterns
+                r"(?:credits roll(?:ed)?)",
+                r"(?:would|rather) (?:die|pass away|be dead) than",
+                r"would die for",
+                r"knocked me dead",
+                r"knock 'em dead",
+                r"painkiller",
+                r"pain relief",
+                r"painful to watch",
+                r"painful experience",
+                r"hurt(?:s|ing)? to watch",
+                
+                # Restaurant-specific terms
+                r"killer app",
+                r"killer dish",
+                r"to die for",
+                r"killer menu",
+                r"painfully spicy",
+                
+                # Criticism expressions
+                r"torture to watch",
+                r"suffered through",
+                r"suffering from boredom",
+                r"painful to sit through",
+                r"hurts the eyes",
+                r"murdered the song"
             ]
             
             # If text matches any whitelist pattern, explicitly return False
@@ -978,10 +1175,42 @@ class SentimentEnsemble:
                     logger.info(f"Safety check: Whitelisted expression detected: '{pattern}'")
                     return False
             
+            # Check for product or service reviews
+            review_indicators = [
+                r"review(?:ing|ed)?", r"product", r"service", r"customer", r"recommend", 
+                r"purchase(?:d)?", r"buy", r"bought", r"order(?:ed)?", r"deliver(?:y|ed)?",
+                r"restaurant", r"food", r"meal", r"movie", r"film", r"book", r"read", 
+                r"watch(?:ed)?", r"experience"
+            ]
+            
+            is_review_context = any(re.search(pattern, text_lower) for pattern in review_indicators)
+            
+            # If it's clearly a review context, reduce sensitivity to negative terms
+            if is_review_context:
+                # Review-specific whitelist check (more permissive)
+                review_whitelist = [
+                    r"kill(?:s|ed|ing)? (?:time|the mood|the vibe|the atmosphere)",
+                    r"dead (?:boring|simple|obvious|straightforward)",
+                    r"pain(?:ful)? to use",
+                    r"hurt(?:s|ing)? (?:my|the) (?:wallet|budget|bank account)"
+                ]
+                
+                if any(re.search(pattern, text_lower) for pattern in review_whitelist):
+                    logger.info(f"Safety check: Review context with permissible negative expression")
+                    return False
+            
             # General milder negative terms that shouldn't trigger on their own
             mild_negative_terms = [
                 "alone", "lonely", "die", "death", "pain", "hurt"
             ]
+            
+            # Count occurrences of mild negative terms in a review context
+            if is_review_context:
+                # In review contexts, allow mild negative terms
+                mild_term_count = sum(1 for term in mild_negative_terms if term in text_lower)
+                if mild_term_count > 0:
+                    logger.info(f"Safety check: Review context with {mild_term_count} mild negative terms - allowing")
+                    return False
             
             # These mild terms need strong contextual indicators to trigger
             strong_context_patterns = [
@@ -996,6 +1225,12 @@ class SentimentEnsemble:
                     logger.warning(f"Safety check: Strong negative context detected: '{text}'")
                     return True
             
+            # Check for standalone mild negative terms without review context
+            if not is_review_context and any(term in text_lower for term in mild_negative_terms):
+                # Return 0.5 to indicate caution but not complete filtering
+                logger.info(f"Safety check: Mild negative terms without review context - caution flag")
+                return 0.5
+                
             # If we've made it here, the content should be safe
             return False
         
@@ -1031,28 +1266,38 @@ class SentimentEnsemble:
         """
         text = text.lower()
         
-        # Sleep pattern sarcasm
-        if re.search(r'(?:if you (?:enjoy|like) (?:falling asleep|being bored))', text):
-            return "Negative", 87.5, "conditional_enjoyment"
+        # Sleep pattern sarcasm - enhanced pattern matching
+        if re.search(r'(?:if you (?:enjoy|like) (?:falling asleep|being bored|dozing off|nodding off))', text) or \
+           re.search(r'(?:perfect|great|ideal) (?:for|if) (?:you|someone|people) (?:enjoy|like|want) (?:to|falling) (?:asleep|sleep|bored)', text):
+            logger.info(f"Detected sleep-related sarcasm: '{text}'")
+            return "Negative", 92.5, "conditional_enjoyment"
             
-        # End event highlight sarcasm
-        if re.search(r'(?:best part|highlight).+(?:when|was) (?:(?:it|the movie) (?:end|finish)|the credits roll)', text):
+        # End event highlight sarcasm - enhanced pattern matching
+        if re.search(r'(?:best part|highlight|favorite moment).+(?:when|was) (?:(?:it|the movie|the film|this) (?:end|ends|finish|finished|over)|the credits roll)', text) or \
+           re.search(r'(?:best|favorite).+(?:credits roll|ending|finished|over)', text):
+            logger.info(f"Detected end-event sarcasm: '{text}'")
             return "Negative", 95.0, "end_event_highlight"
             
-        # Negative comparison
-        if re.search(r'(?:rather|prefer) (?:watch paint dry|watch grass grow|do chores|do homework).+than', text):
+        # Negative comparison - enhanced pattern matching
+        if re.search(r'(?:rather|prefer|better|sooner) (?:watch|see|witness|stare at) (?:paint dry|grass grow|water boil|wall|drying paint).+than', text) or \
+           re.search(r'(?:paint dry|grass grow|water boil).+(?:than|instead of).+(?:this|again|movie|film)', text):
+            logger.info(f"Detected negative comparison sarcasm: '{text}'")
             return "Negative", 95.0, "comparative_negative"
             
-        # Mocking praise
-        if re.search(r'(?:wow|amazing|incredible).+(?:forgettable|boring|terrible|awful)', text):
+        # Mocking praise - enhanced pattern matching
+        if re.search(r'(?:wow|amazing|incredible|impressive|outstanding).+(?:forgettable|boring|terrible|awful|bad|worst|dull|pointless)', text) or \
+           re.search(r'(?:outdid themselves|remarkable achievement).+(?:how|with) (?:forgettable|terrible|bad|boring)', text):
+            logger.info(f"Detected mocking praise sarcasm: '{text}'")
             return "Negative", 85.0, "contrasting_praise"
             
-        # Conditional praise
-        if re.search(r'(?:masterpiece|brilliant|amazing).+(?:if|only if).+(?:standards|expectations).+(?:low|below)', text):
+        # Conditional praise - enhanced pattern matching
+        if re.search(r'(?:masterpiece|brilliant|amazing|excellent).+(?:if|only if|assuming).+(?:standards|expectations|taste|judgment).+(?:low|below|terrible|non-existent)', text):
+            logger.info(f"Detected conditional praise sarcasm: '{text}'")
             return "Negative", 90.0, "conditional_praise"
             
-        # Delayed negative reveal
-        if re.search(r'(?:achievement|accomplishment|success).+(?:what not to|how not to|failure)', text):
+        # Delayed negative reveal - enhanced pattern matching
+        if re.search(r'(?:achievement|accomplishment|success|triumph).+(?:what not to|how not to|failure|disaster|catastrophe)', text):
+            logger.info(f"Detected delayed negative reveal sarcasm: '{text}'")
             return "Negative", 88.0, "delayed_negative"
         
         # No sarcasm detected
@@ -1065,29 +1310,43 @@ class SentimentEnsemble:
         """
         text = text.lower()
         
-        # Positive idioms
+        # Positive idioms - enhanced patterns
         positive_idioms = [
             (r'guilty pleasure', "positive_expression"),
             (r'laughed more than .* should', "humor_appreciation"),
+            (r'laugh(?:ed)? (?:more|harder|louder) than', "humor_appreciation"),
+            (r'that\'s a win', "positive_outcome"),
+            (r'a win in my book', "personal_approval"),
             (r'diamond in the rough', "hidden_value"),
             (r'runs like a dream', "performance_excellence"),
-            (r'worth (?:every|the) penny', "value_affirmation")
+            (r'worth (?:every|the) penny', "value_affirmation"),
+            (r'secretly enjoyed', "guilty_pleasure"),
+            (r'better than (?:expected|anticipated)', "expectation_exceeded"),
+            (r'pleasantly surprised', "positive_surprise")
         ]
         
         for pattern, type_label in positive_idioms:
             if re.search(pattern, text):
-                return "Positive", 86.5, type_label
+                logger.info(f"Detected positive idiom: '{pattern}' in text")
+                return "Positive", 90.5, type_label
                 
-        # Negative idioms
+        # Negative idioms - enhanced patterns
         negative_idioms = [
             (r'train wreck', "negative_expression"),
             (r'wouldn\'?t recommend', "negative_expression"),
             (r'waste of time', "time_value_negative"),
-            (r'lost cause', "hopeless_situation")
+            (r'lost cause', "hopeless_situation"),
+            (r'torture to watch', "negative_experience"),
+            (r'avoid (?:at all costs|like the plague)', "strong_avoidance"),
+            (r'hard pass', "rejection_phrase"),
+            (r'fell flat', "performance_failure"),
+            (r'missed the mark', "goal_failure"),
+            (r'painful to watch', "viewing_discomfort")
         ]
         
         for pattern, type_label in negative_idioms:
             if re.search(pattern, text):
+                logger.info(f"Detected negative idiom: '{pattern}' in text")
                 return "Negative", 92.5, type_label
         
         # No idiom detected
@@ -1129,6 +1388,30 @@ class SentimentEnsemble:
         if contradiction_info is None:
             contradiction_info = {"contradiction_detected": False}
         
+        # Check for restaurant review with contrast markers
+        restaurant_info = {"is_restaurant": False}
+        is_restaurant, food_count, service_count = self._is_restaurant_review(original_text)
+        
+        # Process contrast markers for more nuanced understanding
+        contrast_info = self.process_contrast_markers(original_text)
+        
+        # Special handling for restaurant reviews with contrast markers
+        if is_restaurant and contrast_info.get("has_contrast", False):
+            restaurant_info = {
+                "is_restaurant": True,
+                "food_count": food_count,
+                "service_count": service_count,
+                "has_contrast": True,
+                "contrast_marker": contrast_info.get("contrast_marker", ""),
+                "has_forced_positive": contrast_info.get("has_forced_positive", False),
+                "has_forced_negative": contrast_info.get("has_forced_negative", False)
+            }
+            logger.info(f"Restaurant review with contrast marker '{contrast_info.get('contrast_marker')}' detected")
+            
+            # If we have a strong restaurant pattern that forces sentiment, respect it
+            if contrast_info.get("has_forced_positive", False):
+                logger.info(f"[{modelname}] Restaurant review with forced POSITIVE sentiment")
+                
         # Get the model to use
         model = self.models[modelname]
         
@@ -1142,8 +1425,63 @@ class SentimentEnsemble:
         # Default model name
         model_name = modelname
         
+        # Check for special overrides from restaurant + contrast detection (highest priority)
+        if restaurant_info["is_restaurant"] and restaurant_info["has_contrast"]:
+            # If restaurant pattern detection found a forced sentiment, apply it
+            if restaurant_info["has_forced_positive"]:
+                logger.info(f"[{modelname}] Forcing POSITIVE prediction for restaurant review with contrast marker")
+                prediction = 1  # Force positive
+                confidence = max(0.80, confidence)  # Higher confidence for food quality statements
+                model_name = f"{modelname}_with_restaurant_analysis"
+            elif restaurant_info["has_forced_negative"]:
+                logger.info(f"[{modelname}] Forcing NEGATIVE prediction for restaurant review with contrast marker")
+                prediction = 0  # Force negative
+                confidence = max(0.82, confidence)  # Higher confidence for food quality statements
+                model_name = f"{modelname}_with_restaurant_analysis"
+            elif contrast_info.get("has_contrast", False):
+                # Use weighted prediction for contrast cases without forced sentiment
+                logger.info(f"[{modelname}] Using weighted contrast prediction for restaurant review")
+                
+                # Apply separate analysis to parts before and after contrast marker
+                try:
+                    before_features = self._extract_features(contrast_info["before"])
+                    after_features = self._extract_features(contrast_info["after"])
+                    
+                    before_pred = model.predict(before_features)[0]
+                    after_pred = model.predict(after_features)[0]
+                    
+                    before_weight = contrast_info.get("before_weight", 0.4)
+                    after_weight = contrast_info.get("after_weight", 0.6)
+                    
+                    # In restaurant reviews, the food quality often matters more
+                    if food_count > 0 and "food" in contrast_info["after"].lower():
+                        logger.info(f"Further emphasizing after-part containing food references")
+                        # If after part contains food references, give it even more weight
+                        total = before_weight + after_weight
+                        before_weight = before_weight * 0.7  # Reduce before weight
+                        after_weight = total - before_weight  # Increase after weight
+                    
+                    # Do weighted combination (considering 1=positive, 0=negative)
+                    weighted_score = (before_pred * before_weight) + (after_pred * after_weight)
+                    
+                    # Determine final prediction
+                    if weighted_score >= 0.5:
+                        prediction = 1
+                        confidence = max(0.6, weighted_score) 
+                    else:
+                        prediction = 0
+                        confidence = max(0.6, 1 - weighted_score)
+                    
+                    # Adjust confidence based on the difference in weights
+                    confidence = min(confidence + abs(before_weight - after_weight) * 0.1, 0.95)
+                    
+                    model_name = f"{modelname}_with_restaurant_contrast_analysis"
+                    logger.info(f"Restaurant contrast analysis: weighted score={weighted_score:.2f}, confidence={confidence:.2f}")
+                except Exception as e:
+                    logger.error(f"Error in restaurant contrast analysis: {e}")
+        
         # Check for special overrides from sarcasm detection
-        if sarcasm_info["sarcasm_detected"]:
+        elif sarcasm_info["sarcasm_detected"]:
             logger.info(f"Sarcasm detection will influence prediction: {sarcasm_info['sarcasm_type']}")
             
             if sarcasm_info["force_sentiment"] == "positive":
@@ -1227,13 +1565,14 @@ class SentimentEnsemble:
         random_factor = random.uniform(0.01, 0.03)
         confidence = min(confidence + random_factor, 0.95)
         
-        return {
+        prediction_result = {
             "text": original_text,
-            "prediction": prediction,
             "sentiment": sentiment,
             "confidence": confidence * 100,  # Convert to percentage
             "model_used": model_name
         }
+        
+        return prediction_result
 
     def _detect_neutral_sentiment(self, text):
         """
@@ -1275,21 +1614,27 @@ class SentimentEnsemble:
         # Not deemed explicitly neutral
         return False, 0.0
 
-    def predict(self, text, modelname=None, use_sarcasm_detection=True, use_idiom_detection=True, use_contradiction_detection=True):
+    def predict(self, text, modelname=None, specific_model=None, use_sarcasm_detection=True, use_idiom_detection=True, use_contradiction_detection=True):
         """
         Make predictions on a single text input.
         """
+        # Handle the specific_model parameter for backward compatibility
+        if specific_model is not None and modelname is None:
+            modelname = specific_model
+            
         prediction_result = {}
         text = str(text)
         
         simple_case_override = None
         # First check if this is a simple case
-        simple_case = self._handle_simple_cases(text)
-        if simple_case is not None:
-            simple_case_override = simple_case
+        simple_case_result = self._handle_simple_cases(text)
+        if simple_case_result:
+            is_simple, sentiment, confidence = simple_case_result
+            if is_simple:
+                simple_case_override = sentiment
             
         # Clean the text
-        cleaned_text = self.clean_text(text)
+        cleaned_text, negation_markers, special_phrase_info = self.clean_text(text)
         
         # Check for explicit neutral sentiment before running the models
         is_neutral, neutral_confidence = self._detect_neutral_sentiment(text)
@@ -1303,143 +1648,218 @@ class SentimentEnsemble:
             }
         
         # Perform a safety check
-        if self.safety_check(text) == 0:
+        safety_result = self.safety_check(text)
+        if safety_result is True:
+            # Hard filter for definitely harmful content
             return {
                 "text": text,
                 "sentiment": "Negative",
                 "confidence": 95.0,
                 "model_used": f"{modelname if modelname else 'default'}_with_safety_filter"
             }
-            
-        # Check for sarcasm patterns
+        elif safety_result == 0.5:
+            # Caution flag - continue with analysis but note the concern
+            logger.info("Safety check: Mild concern detected. Continuing with analysis but will adjust confidence.")
+            # We'll handle confidence adjustment later, after model predictions
+        
+        # Setup sarcasm, idiom and contradiction detection if enabled
+        sarcasm_info = None
+        idiom_info = None
+        contradiction_info = None
+        
         if use_sarcasm_detection:
             sarcasm_result = self._detect_sarcasm(text)
             if sarcasm_result:
                 sentiment, confidence, pattern_type = sarcasm_result
-                logger.info(f"Sarcasm detection will influence prediction: {pattern_type}")
-                if modelname:
-                    logger.info(f"[{modelname}] Forcing {sentiment} prediction due to sarcasm: '{pattern_type}'")
-                
-                return {
-                    "text": text,
-                    "sentiment": sentiment,
-                    "confidence": confidence,
-                    "model_used": f"{modelname if modelname else 'default'}_with_sarcasm_detection"
+                sarcasm_info = {
+                    "sarcasm_detected": True,
+                    "sarcasm_type": pattern_type,
+                    "sarcastic_phrase": pattern_type,
+                    "force_sentiment": "positive" if sentiment == "Positive" else "negative",
+                    "confidence_adjustment": (confidence - 75) / 100  # Adjustment factor based on confidence
                 }
-            
-        # Check for idioms
+            else:
+                sarcasm_info = {"sarcasm_detected": False}
+                
         if use_idiom_detection:
             idiom_result = self._detect_idioms(text)
             if idiom_result:
                 sentiment, confidence, pattern_type = idiom_result
-                logger.info(f"Idiom detection will influence prediction: {pattern_type}")
-                if modelname:
-                    logger.info(f"[{modelname}] Forcing {sentiment} prediction due to idiom: '{pattern_type}'")
-                
-                return {
-                    "text": text,
-                    "sentiment": sentiment,
-                    "confidence": confidence,
-                    "model_used": f"{modelname if modelname else 'default'}_with_idiom_detection"
+                idiom_info = {
+                    "idiom_detected": True,
+                    "idiom_type": pattern_type,
+                    "detected_idiom": pattern_type,
+                    "force_sentiment": "positive" if sentiment == "Positive" else "negative",
+                    "confidence_adjustment": (confidence - 75) / 100
                 }
+            else:
+                idiom_info = {"idiom_detected": False}
                 
-        # Check for contradictions
         if use_contradiction_detection:
             contradiction_result = self._detect_contradiction(text)
             if contradiction_result:
                 sentiment, confidence, pattern_type = contradiction_result
-                if modelname:
-                    logger.info(f"[{modelname}] Forcing {sentiment} prediction due to contradiction: '{pattern_type}'")
-                
-                return {
-                    "text": text,
-                    "sentiment": sentiment,
-                    "confidence": confidence,
-                    "model_used": f"{modelname if modelname else 'default'}_with_contradiction_detection"
+                contradiction_info = {
+                    "contradiction_detected": True,
+                    "detected_phrase": pattern_type,
+                    "force_sentiment": "positive" if sentiment == "Positive" else "negative",
+                    "confidence_adjustment": (confidence - 75) / 100,
+                    "second_part": pattern_type.split("!")[-1] if "!" in pattern_type else ""
                 }
+            else:
+                contradiction_info = {"contradiction_detected": False}
         
         # Get predictions from the models
-        predictions = {}
-        confidences = {}
+        model_predictions = {}
+        
+        # Prepare simple case for model
+        simple_case_results = {}
+        if simple_case_override is not None:
+            simple_case_results = {
+                "is_simple_case": True,
+                "prediction": 1 if simple_case_override == "Positive" else 0,
+                "confidence": 0.90 + (0.05 * random.random())  # 90-95% confidence
+            }
         
         # If a specific model is specified, use that one
         if modelname:
             if modelname in self.models:
                 logger.info(f"Using specified model: {modelname}")
-                predictions[modelname], confidences[modelname] = self.predict_with_specific_model(cleaned_text, modelname)
+                model_predictions[modelname] = self.predict_with_specific_model(
+                    text, cleaned_text, modelname, 
+                    simple_case_results=simple_case_results,
+                    sarcasm_info=sarcasm_info,
+                    idiom_info=idiom_info,
+                    contradiction_info=contradiction_info
+                )
             else:
                 raise ValueError(f"Invalid model name: {modelname}")
         else:
             # Use all models
             for model_name in self.models:
-                predictions[model_name], confidences[model_name] = self.predict_with_specific_model(cleaned_text, model_name)
-        
-        # Apply simple case override if appropriate
-        for model in predictions:
-            if simple_case_override is not None:
-                if model:
-                    logger.info(f"[{model}] Overriding with simple case detection: {simple_case_override}")
-                predictions[model] = simple_case_override
-                confidences[model] = 90 + (5 * random.random())  # 90-95% confidence 
+                model_predictions[model_name] = self.predict_with_specific_model(
+                    text, cleaned_text, model_name,
+                    simple_case_results=simple_case_results,
+                    sarcasm_info=sarcasm_info,
+                    idiom_info=idiom_info,
+                    contradiction_info=contradiction_info
+                )
         
         # Process the results
-        result_sentiment = None
-        sentiment_confidence = 0
-        model_used = None
-        
         # If we have a specific model, use just its results
         if modelname:
-            result_sentiment = "Positive" if predictions[modelname] == 1 else "Negative" if predictions[modelname] == 0 else "Neutral"
-            sentiment_confidence = confidences[modelname]
-            model_used = modelname
+            return model_predictions[modelname]
         else:
             # Combine results from all models
-            # Calculate ensemble prediction (average of all models)
-            ensemble_score = 0
-            ensemble_confidence = 0
-            
-            # Count positive and negative predictions
+            # Get ensemble prediction by analyzing all model outputs
             positive_count = 0
             negative_count = 0
+            total_confidence = 0
             
-            for model_name, prediction in predictions.items():
-                if prediction == 1:  # Positive
+            for model_name, result in model_predictions.items():
+                if result["sentiment"] == "Positive":
                     positive_count += 1
-                    ensemble_score += 1 * (confidences[model_name] / 100)
                 else:  # Negative
                     negative_count += 1
-                    ensemble_score += 0 * (confidences[model_name] / 100)
                 
-                ensemble_confidence += confidences[model_name] / 100
+                total_confidence += result["confidence"]
             
-            # Average the ensemble score and confidence
-            if len(predictions) > 0:
-                ensemble_score = ensemble_score / len(predictions)
-                ensemble_confidence = ensemble_confidence / len(predictions)
-                
+            # Average the confidence
+            avg_confidence = total_confidence / len(model_predictions) if model_predictions else 75.0
+            
             # Handle potential neutral case (when models are in significant disagreement)
-            if abs(positive_count - negative_count) <= 1 and len(predictions) > 2:
-                # Models are split or almost split - could be neutral
-                if 0.4 <= ensemble_score <= 0.6:
-                    result_sentiment = "Neutral"
-                    sentiment_confidence = 70.0  # Lower confidence for this automatic neutral case
+            if abs(positive_count - negative_count) <= 1 and len(model_predictions) > 1:
+                # Models are split - could be neutral
+                if 0.4 <= (positive_count / len(model_predictions)) <= 0.6:
+                    final_sentiment = "Neutral"
+                    final_confidence = 70.0  # Lower confidence for this automatic neutral case
                     model_used = "ensemble_neutral_detection"
                 else:
                     # Not balanced enough for neutral
-                    result_sentiment = "Positive" if ensemble_score >= 0.5 else "Negative"
-                    sentiment_confidence = ensemble_confidence * 100
+                    final_sentiment = "Positive" if positive_count > negative_count else "Negative"
+                    final_confidence = avg_confidence
                     model_used = "ensemble"
             else:
                 # Clear majority
-                result_sentiment = "Positive" if ensemble_score >= 0.5 else "Negative"
-                sentiment_confidence = ensemble_confidence * 100
+                final_sentiment = "Positive" if positive_count > negative_count else "Negative"
+                final_confidence = avg_confidence
                 model_used = "ensemble"
         
-        prediction_result = {
-            "text": text,
-            "sentiment": result_sentiment,
-            "confidence": sentiment_confidence,
-            "model_used": model_used
-        }
+            prediction_result = {
+                "text": text,
+                "sentiment": final_sentiment,
+                "confidence": final_confidence,
+                "model_used": model_used
+            }
+        
+        # Apply confidence reduction for mild safety concerns
+        if safety_result == 0.5:
+            # Reduce confidence by 15% for mild safety concerns
+            original_confidence = prediction_result["confidence"]
+            reduced_confidence = max(original_confidence * 0.85, 60.0)  # Don't go below 60%
+            prediction_result["confidence"] = reduced_confidence
+            prediction_result["model_used"] = f"{prediction_result['model_used']}_with_safety_adjustment"
+            logger.info(f"Safety adjustment: Reduced confidence from {original_confidence:.2f}% to {reduced_confidence:.2f}%")
         
         return prediction_result
+
+    def _is_restaurant_review(self, text):
+        """
+        Detect if text is likely a restaurant review based on food/dining terms.
+        Returns a tuple (is_restaurant, food_terms_found, service_terms_found)
+        """
+        text = text.lower()
+        
+        # Terms that indicate food or restaurant context
+        food_terms = [
+            "food", "meal", "dish", "restaurant", "cafe", "diner", "bistro", 
+            "menu", "waiter", "waitress", "server", "chef", "cuisine", "dinner", 
+            "lunch", "breakfast", "appetizer", "entree", "dessert", "plate",
+            "delicious", "tasty", "flavorful", "savory", "tender", "juicy",
+            "spicy", "bland", "fresh", "stale", "overcooked", "undercooked",
+            "pasta", "steak", "fish", "chicken", "seafood", "vegetarian", "vegan",
+            "pizza", "burger", "salad", "fries", "rice", "noodles", "sushi", 
+            "taco", "burrito", "sandwich", "soup", "buffet", "brunch", "dining",
+            "eat", "ate", "eaten", "tasted", "ordered", "served", "portion"
+        ]
+        
+        # Terms specific to restaurant service/ambiance
+        service_terms = [
+            "service", "staff", "waiter", "waitress", "server", "host", "hostess",
+            "manager", "tip", "reservation", "wait time", "waiting", "seated",
+            "crowded", "busy", "queue", "line", "atmosphere", "ambiance", "ambience",
+            "decor", "noisy", "quiet", "clean", "dirty", "hygiene", "bathroom",
+            "restroom", "table", "seating", "chair", "booth", "patio", "outdoor",
+            "indoor", "bar", "lounge", "price", "expensive", "cheap", "affordable",
+            "overpriced", "worth", "value", "money"
+        ]
+        
+        # Count occurrences of each type of term
+        food_terms_found = sum(1 for term in food_terms if term in text)
+        service_terms_found = sum(1 for term in service_terms if term in text)
+        
+        # Combined score (weighted)
+        is_restaurant_review = (food_terms_found >= 2 or service_terms_found >= 2 or 
+                              (food_terms_found >= 1 and service_terms_found >= 1))
+        
+        if is_restaurant_review:
+            logger.info(f"Restaurant review detected: food terms={food_terms_found}, service terms={service_terms_found}")
+            
+        return (is_restaurant_review, food_terms_found, service_terms_found)
+
+    def _extract_features(self, text):
+        """
+        Extract features from processed text for prediction.
+        This vectorizes the text using the model's vectorizers.
+        """
+        try:
+            # Create a feature set using TF-IDF features
+            features = self.tfidf_vectorizer.transform([text])
+            return features
+        except Exception as e:
+            logger.error(f"Error extracting features: {e}")
+            # Emergency fallback: return an empty sparse matrix with the correct dimensions
+            from scipy.sparse import csr_matrix
+            import numpy as np
+            feature_count = len(self.tfidf_vectorizer.get_feature_names_out())
+            return csr_matrix((1, feature_count), dtype=np.float64)
