@@ -5,6 +5,8 @@ import json
 import time
 from datetime import datetime
 import os
+import argparse
+from typing import List, Dict, Any, Optional, Set, Tuple
 
 # Configure enhanced logging with colors and formatting for console output
 class ColoredFormatter(logging.Formatter):
@@ -18,14 +20,21 @@ class ColoredFormatter(logging.Formatter):
         'RESET': '\033[0m'      # Reset color
     }
     
+    def __init__(self, fmt=None, datefmt=None, style='%', use_color=True):
+        super().__init__(fmt, datefmt, style)
+        self.use_color = use_color
+    
     def format(self, record):
         log_message = super().format(record)
+        if not self.use_color:
+            return log_message
+            
         if hasattr(record, 'highlight') and record.highlight:
             return f"\033[97m\033[1m{log_message}\033[0m"  # Bold white for highlights
         return f"{self.COLORS.get(record.levelname, self.COLORS['RESET'])}{log_message}{self.COLORS['RESET']}"
 
 # Set up logging for both console and file
-def setup_logging():
+def setup_logging(log_level=logging.INFO, use_color=True):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
     # Create logs directory if it doesn't exist
@@ -34,17 +43,21 @@ def setup_logging():
     
     # Configure root logger
     root_logger = logging.getLogger()
-    root_logger.setLevel(logging.DEBUG)
+    root_logger.setLevel(log_level)
+    
+    # Clear any existing handlers
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
     
     # Console handler with colored output
     console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    console_formatter = ColoredFormatter('%(levelname)s: %(message)s')
+    console_handler.setLevel(log_level)
+    console_formatter = ColoredFormatter('%(levelname)s: %(message)s', use_color=use_color)
     console_handler.setFormatter(console_formatter)
     
     # File handler for detailed logging
     file_handler = logging.FileHandler(f'logs/test_run_{timestamp}.log')
-    file_handler.setLevel(logging.DEBUG)
+    file_handler.setLevel(logging.DEBUG)  # Always log everything to file
     file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     file_handler.setFormatter(file_formatter)
     
@@ -54,8 +67,8 @@ def setup_logging():
     
     return root_logger
 
-# Set up the logger
-logger = setup_logging()
+# Set up the logger with default settings - will be reconfigured based on command args
+logger = logging.getLogger(__name__)
 
 try:
     from ensemble_model import SentimentEnsemble
@@ -218,10 +231,22 @@ class DiagnosticEnsemble(SentimentEnsemble):
         
         return summary
 
-def test_sentiment_analysis():
+def test_sentiment_analysis(categories: Optional[List[str]] = None,
+                           models: Optional[List[str]] = None,
+                           enable_debug: bool = False,
+                           compare_with: Optional[str] = None) -> Dict[str, Any]:
     """
     Test the sentiment analysis model on a set of challenging test cases.
     Enhanced with diagnostics and performance analysis.
+    
+    Args:
+        categories: Optional list of test categories to run (e.g., ["negation", "sarcasm"])
+        models: Optional list of models to test (default: all available models)
+        enable_debug: Whether to enable detailed debugging output
+        compare_with: Timestamp of previous results to compare with, or "latest"
+        
+    Returns:
+        Dictionary with test results
     """
     try:
         # Initialize the model with diagnostics
@@ -450,8 +475,45 @@ def test_sentiment_analysis():
             }
         ]
         
-        # Run tests with both models
-        models_to_test = ["naive_bayes", "logistic_regression"]
+        # Filter test cases by category if specified
+        if categories:
+            filtered_test_cases = []
+            for test_case in test_cases:
+                test_categories = test_case.get("category", "").split(",")
+                if any(cat.strip() in categories for cat in test_categories if cat.strip()):
+                    filtered_test_cases.append(test_case)
+            
+            logger.info(f"Filtering tests by categories: {', '.join(categories)}")
+            logger.info(f"Selected {len(filtered_test_cases)} of {len(test_cases)} test cases")
+            test_cases = filtered_test_cases
+        
+        # Select which models to test
+        available_models = ["naive_bayes", "logistic_regression"]
+        models_to_test = models if models else available_models
+        
+        # Validate selected models
+        for model_name in models_to_test:
+            if model_name not in available_models:
+                logger.warning(f"Unknown model: {model_name}. Will be skipped.")
+        
+        # Filter to only valid models
+        models_to_test = [m for m in models_to_test if m in available_models]
+        
+        if not models_to_test:
+            logger.error("No valid models selected for testing!")
+            return {}
+            
+        logger.info(f"Testing with models: {', '.join(models_to_test)}")
+        
+        # Load previous results for comparison if requested
+        previous_results = None
+        if compare_with:
+            previous_results = load_previous_results(compare_with)
+            if previous_results:
+                logger.info(f"Loaded previous results for comparison: {compare_with}")
+            else:
+                logger.warning(f"Could not load previous results for comparison: {compare_with}")
+        
         results = {}
         diagnostic_data = {}
         
@@ -640,6 +702,10 @@ def test_sentiment_analysis():
             json.dump(diagnostic_data, f, indent=2)
         logger.info(f"Diagnostic data saved to {diagnostic_file}")
         
+        # Compare with previous results if requested
+        if previous_results:
+            compare_results(results, previous_results)
+        
         return results
     
     except Exception as e:
@@ -647,5 +713,118 @@ def test_sentiment_analysis():
         logger.error(traceback.format_exc())
         return None
 
+def load_previous_results(timestamp_or_latest: str) -> Optional[Dict[str, Any]]:
+    """Load previous test results for comparison"""
+    try:
+        if timestamp_or_latest.lower() == "latest":
+            # Find the most recent results file (excluding the current run)
+            results_files = sorted([f for f in os.listdir("test_results") 
+                                  if f.startswith("sentiment_test_results_") and f.endswith(".json")],
+                                  key=lambda x: x.split("_")[-1].split(".")[0],
+                                  reverse=True)
+            
+            if not results_files:
+                logger.warning("No previous results files found")
+                return None
+                
+            filename = results_files[0]  # Most recent file
+        else:
+            # Use the specified timestamp
+            filename = f"sentiment_test_results_{timestamp_or_latest}.json"
+        
+        filepath = os.path.join("test_results", filename)
+        if not os.path.exists(filepath):
+            logger.warning(f"Results file not found: {filepath}")
+            return None
+            
+        with open(filepath, 'r') as f:
+            return json.load(f)
+            
+    except Exception as e:
+        logger.error(f"Error loading previous results: {e}")
+        return None
+
+def compare_results(current_results: Dict[str, Any], previous_results: Dict[str, Any]) -> None:
+    """Compare current test results with previous results and log the differences"""
+    logger.info("\n===== COMPARISON WITH PREVIOUS RESULTS =====")
+    
+    # Compare overall accuracy
+    for model_name in current_results:
+        if model_name in previous_results:
+            current_acc = current_results[model_name]["overall_pass_rate"]
+            previous_acc = previous_results[model_name]["overall_pass_rate"]
+            diff = current_acc - previous_acc
+            
+            if diff > 0:
+                logger.info(f"{model_name}: {current_acc:.1f}% (+{diff:.1f}% improvement)")
+            elif diff < 0:
+                logger.warning(f"{model_name}: {current_acc:.1f}% ({diff:.1f}% regression)")
+            else:
+                logger.info(f"{model_name}: {current_acc:.1f}% (no change)")
+    
+    # Compare category-specific results
+    for model_name in current_results:
+        if model_name in previous_results:
+            logger.info(f"\nCategory changes for {model_name}:")
+            
+            current_cats = current_results[model_name]["category_pass_rates"]
+            previous_cats = previous_results[model_name]["category_pass_rates"]
+            
+            # Find all categories from both results
+            all_categories = set(current_cats.keys()) | set(previous_cats.keys())
+            
+            for category in sorted(all_categories):
+                if category in current_cats and category in previous_cats:
+                    # Category exists in both results
+                    current_rate = current_cats[category]["pass_rate"]
+                    previous_rate = previous_cats[category]["pass_rate"]
+                    diff = current_rate - previous_rate
+                    
+                    if diff > 0:
+                        logger.info(f"  - {category}: {current_rate:.1f}% (+{diff:.1f}% improvement)")
+                    elif diff < 0:
+                        logger.warning(f"  - {category}: {current_rate:.1f}% ({diff:.1f}% regression)")
+                elif category in current_cats:
+                    # New category in current results
+                    logger.info(f"  - {category}: {current_cats[category]['pass_rate']:.1f}% (new category)")
+                else:
+                    # Category only in previous results
+                    logger.warning(f"  - {category}: category removed or not tested")
+
+def parse_args():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(description='Run sentiment analysis tests with enhanced diagnostics')
+    
+    # Test filtering options
+    parser.add_argument('--categories', type=str, help='Comma-separated list of test categories to run')
+    parser.add_argument('--models', type=str, help='Comma-separated list of models to test')
+    
+    # Debug and output options
+    parser.add_argument('--debug', action='store_true', help='Enable debug output')
+    parser.add_argument('--no-color', action='store_true', help='Disable colored output')
+    
+    # Comparison options
+    parser.add_argument('--compare', type=str, help='Compare with previous results (timestamp or "latest")')
+    
+    return parser.parse_args()
+
 if __name__ == "__main__":
-    test_sentiment_analysis() 
+    # Parse command line arguments
+    args = parse_args()
+    
+    # Configure logging based on arguments
+    log_level = logging.DEBUG if args.debug else logging.INFO
+    use_color = not args.no_color
+    setup_logging(log_level=log_level, use_color=use_color)
+    
+    # Parse categories and models if provided
+    categories = args.categories.split(',') if args.categories else None
+    models = args.models.split(',') if args.models else None
+    
+    # Run tests with specified options
+    test_sentiment_analysis(
+        categories=categories,
+        models=models,
+        enable_debug=args.debug,
+        compare_with=args.compare
+    ) 
