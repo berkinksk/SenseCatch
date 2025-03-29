@@ -1,5 +1,31 @@
-venv/
+# Python bytecode
 __pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Generated logs and test results
+logs/
+test_results/
+
+# Runtime artifacts
+*.log
+.DS_Store
 *.pyc
 *.pyo
 *.pyd
@@ -10,3 +36,9 @@ __pycache__/
 *.ipynb_checkpoints
 models/
 nltk_data/
+
+# Project-specific files that should never be committed
+ensemble_model.py.backup
+ensemble_model.py.methods
+project_context_prompt.txt
+committed_model_methods.txt
