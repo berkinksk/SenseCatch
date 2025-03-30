@@ -119,20 +119,32 @@ The testing framework generates comprehensive HTML reports with:
 
 ## Empirical Evaluation
 
-Our recent test results from the diagnostic framework show:
+> **Note:** The following results are based on our internal test suite of 32 hand-crafted examples designed to evaluate specific linguistic phenomena. They do not represent performance on standard benchmarks. Comprehensive evaluation on established datasets (IMDB, SST, SemEval, etc.) is planned for future work.
 
-| Model | Overall Accuracy | Challenging Cases |
+Our recent test results from the internal diagnostic framework show:
+
+| Model | Internal Test Accuracy | Observations on Challenging Cases |
 |-------|-----------------|-------------------|
 | Naive Bayes | 81.25% | Variable performance on negation (57%) |
-| Logistic Regression | 81.25% | Strong on sarcasm (100%), weaker on contradiction |
-| Combined Analysis | - | Perfect performance on idioms and conclusion markers |
+| Logistic Regression | 81.25% | Strong on sarcasm test cases, weaker on contradiction |
+| Combined Analysis | - | Good performance on idioms and conclusion markers |
 
-Performance varies significantly by linguistic category:
-- Sarcasm detection: ~100% accuracy
-- Idiom recognition: ~100% accuracy
-- Negation handling: ~57% accuracy
-- Contrast handling: ~67% accuracy
+Performance varies significantly by linguistic category in our test suite:
+- Sarcasm detection: Strong performance on our test cases
+- Idiom recognition: Good handling of test examples
+- Negation handling: Challenging area (~57% accuracy)
+- Contrast handling: Mixed results (~67% accuracy)
 - Contradiction cases: Needs improvement
+
+### Future Evaluation Plans
+
+We plan to evaluate the models on standard sentiment analysis benchmarks:
+- Stanford Sentiment Treebank (SST)
+- IMDB Movie Reviews Dataset
+- SemEval competition datasets
+- Twitter Sentiment Analysis Dataset
+
+This will provide more comprehensive and comparable performance metrics.
 
 ## Project Structure
 
