@@ -2058,3 +2058,21 @@ class SentimentEnsemble:
                         return True, "Negative", 80.0
         
         return False, None, 0.0
+
+# Add the load_models function after the class definition
+
+def load_models(model_dir="models", custom_models=None, initialize_all=True):
+    """
+    Load and initialize sentiment analysis models.
+    
+    Args:
+        model_dir (str): Directory where models are stored
+        custom_models (list): List of specific model names to load
+        initialize_all (bool): Whether to initialize all available models
+        
+    Returns:
+        SentimentEnsemble: An initialized ensemble model
+    """
+    logger.info(f"Loading models from {model_dir} directory")
+    # Simply instantiate and return a SentimentEnsemble object
+    return SentimentEnsemble(model_dir=model_dir, initialize_all=initialize_all)
