@@ -1583,6 +1583,252 @@ def create_default_test_suite() -> IncrementalTestSuite:
     logger.info(f"Created default test suite with {len(suite.test_cases)} test cases")
     return suite
 
+def expand_test_suite(suite: IncrementalTestSuite) -> IncrementalTestSuite:
+    """
+    Expand an existing test suite with additional challenging test cases,
+    focusing on areas that need improvement based on previous testing results.
+    
+    Args:
+        suite: The existing test suite to expand
+        
+    Returns:
+        The expanded test suite
+    """
+    original_count = len(suite.test_cases)
+    
+    # Add more complex negation handling cases
+    suite.add_test_case(
+        text="She wasn't unable to finish the project.",
+        expected_sentiment="Positive",
+        description="Double negation cancellation",
+        categories=["negation"],
+        components=["negation_handling"],
+        difficulty="hard"
+    )
+    
+    suite.add_test_case(
+        text="I can't say I wasn't impressed by their service.",
+        expected_sentiment="Positive", 
+        description="Multiple negations with positive sentiment",
+        categories=["negation"],
+        components=["negation_handling"],
+        difficulty="hard"
+    )
+    
+    suite.add_test_case(
+        text="Not only was it not bad, it was actually quite good.",
+        expected_sentiment="Positive",
+        description="Negation with positive intensification",
+        categories=["negation", "intensifier"],
+        components=["negation_handling"],
+        difficulty="medium"
+    )
+    
+    suite.add_test_case(
+        text="No one could deny that the movie was excellent.",
+        expected_sentiment="Positive",
+        description="Negative framing with positive content",
+        categories=["negation", "framing"],
+        components=["negation_handling"],
+        difficulty="medium"
+    )
+    
+    suite.add_test_case(
+        text="There's no way you won't enjoy this restaurant.",
+        expected_sentiment="Positive",
+        description="Double negation with recommendation",
+        categories=["negation", "recommendation"],
+        components=["negation_handling"],
+        difficulty="hard"
+    )
+    
+    # Add more restaurant contrast cases
+    suite.add_test_case(
+        text="The prices were high, but the food was out of this world.",
+        expected_sentiment="Positive",
+        description="Restaurant price-quality contrast",
+        categories=["contrast", "restaurant"],
+        components=["contrast_handling"],
+        difficulty="medium"
+    )
+    
+    suite.add_test_case(
+        text="Despite the rude staff, this is my favorite place to eat.",
+        expected_sentiment="Positive",
+        description="Restaurant with service issues but strong preference",
+        categories=["contrast", "restaurant"],
+        components=["contrast_handling"],
+        difficulty="medium"
+    )
+    
+    suite.add_test_case(
+        text="The atmosphere was lacking, though the flavors were exceptional.",
+        expected_sentiment="Positive",
+        description="Restaurant with atmosphere-food contrast using 'though'",
+        categories=["contrast", "restaurant"],
+        components=["contrast_handling"],
+        difficulty="medium"
+    )
+    
+    suite.add_test_case(
+        text="While we had to wait 30 minutes, their famous chocolate cake made everything worthwhile.",
+        expected_sentiment="Positive",
+        description="Restaurant wait time contrast with specific food highlight",
+        categories=["contrast", "restaurant", "time"],
+        components=["contrast_handling"],
+        difficulty="hard"
+    )
+    
+    # Add general contrast handling cases
+    suite.add_test_case(
+        text="She failed the exam, but she'll get another chance next semester.",
+        expected_sentiment="Neutral",
+        description="Balanced negative-positive contrast",
+        categories=["contrast", "balanced"],
+        components=["contrast_handling"],
+        difficulty="medium"
+    )
+    
+    suite.add_test_case(
+        text="Despite having a small budget, the film was visually stunning.",
+        expected_sentiment="Positive",
+        description="Creative accomplishment despite limitations",
+        categories=["contrast", "creative"],
+        components=["contrast_handling"],
+        difficulty="medium"
+    )
+    
+    suite.add_test_case(
+        text="The plot had some issues, nonetheless I found myself fully invested in the characters.",
+        expected_sentiment="Positive",
+        description="Plot-character contrast with 'nonetheless'",
+        categories=["contrast", "investment"],
+        components=["contrast_handling"],
+        difficulty="medium"
+    )
+    
+    # Add some complex multi-component cases
+    suite.add_test_case(
+        text="I wasn't thrilled with the acting, but the script wasn't bad at all.",
+        expected_sentiment="Neutral",
+        description="Negation with contrast resulting in neutral",
+        categories=["negation", "contrast", "balanced"],
+        components=["negation_handling", "contrast_handling"],
+        difficulty="hard"
+    )
+    
+    suite.add_test_case(
+        text="I know it's not supposed to be great, but I couldn't help loving every minute of it.",
+        expected_sentiment="Positive",
+        description="Expectation contrast with negation and strong positive",
+        categories=["contrast", "expectation", "negation", "guilty_pleasure"],
+        components=["contrast_handling", "negation_handling"],
+        difficulty="hard"
+    )
+    
+    suite.add_test_case(
+        text="The book wasn't exactly a page-turner, yet somehow I couldn't put it down.",
+        expected_sentiment="Positive",
+        description="Contradiction between statement and behavior",
+        categories=["contrast", "contradiction", "negation"],
+        components=["contrast_handling", "negation_handling", "contradiction_detection"],
+        difficulty="hard"
+    )
+    
+    # Add a few more neutral cases
+    suite.add_test_case(
+        text="It has its pros and cons, so I'm completely split on this one.",
+        expected_sentiment="Neutral",
+        description="Explicit balanced pros and cons",
+        categories=["neutral", "balanced"],
+        components=["neutral_detection"],
+        difficulty="easy"
+    )
+    
+    suite.add_test_case(
+        text="The performance was sometimes brilliant and sometimes awful.",
+        expected_sentiment="Neutral",
+        description="Mixed performance quality",
+        categories=["neutral", "mixed"],
+        components=["neutral_detection"],
+        difficulty="medium"
+    )
+    
+    # Add some subtle sarcasm cases
+    suite.add_test_case(
+        text="Just what the world needed, another superhero movie.",
+        expected_sentiment="Negative",
+        description="Subtle sarcasm about market saturation",
+        categories=["sarcasm", "subtle"],
+        components=["sarcasm_detection"],
+        difficulty="hard"
+    )
+    
+    suite.add_test_case(
+        text="Oh great, another email about my car's extended warranty.",
+        expected_sentiment="Negative",
+        description="Sarcastic 'great' about spam",
+        categories=["sarcasm", "subtle"],
+        components=["sarcasm_detection"],
+        difficulty="medium"
+    )
+    
+    # Add regression test cases for previously fixed issues
+    suite.add_test_case(
+        text="Despite the negative reviews, I found it quite enjoyable.",
+        expected_sentiment="Positive",
+        description="Opinion contrast with explicit conclusion",
+        categories=["contrast", "opinion"],
+        components=["contrast_handling"],
+        difficulty="medium",
+        is_regression=True
+    )
+    
+    suite.add_test_case(
+        text="The camera wasn't bad for the price range.",
+        expected_sentiment="Positive",
+        description="Negated negative with contextual qualifier",
+        categories=["negation", "context"],
+        components=["negation_handling"],
+        difficulty="medium",
+        is_regression=True
+    )
+    
+    suite.add_test_case(
+        text="I don't regret purchasing this product at all.",
+        expected_sentiment="Positive",
+        description="Negated regret with intensifier",
+        categories=["negation", "intensifier"],
+        components=["negation_handling"],
+        difficulty="medium",
+        is_regression=True
+    )
+    
+    # Add a few extreme challenge cases
+    suite.add_test_case(
+        text="While the acting left much to be desired, and the special effects weren't convincing, there was something undeniably charming about its earnest approach to the material.",
+        expected_sentiment="Positive",
+        description="Multiple negatives with positive conclusion",
+        categories=["complex", "contrast", "negation", "conclusion"],
+        components=["contrast_handling", "negation_handling"],
+        difficulty="extreme"
+    )
+    
+    suite.add_test_case(
+        text="I'm not saying I didn't dislike parts of it, but I wouldn't say it wasn't worth watching at least once.",
+        expected_sentiment="Neutral",
+        description="Quintuple negation complexity",
+        categories=["negation", "complex"],
+        components=["negation_handling"],
+        difficulty="extreme"
+    )
+    
+    # Log the results
+    logger.info(f"Added {len(suite.test_cases) - original_count} test cases to the suite")
+    logger.info(f"Test suite now contains {len(suite.test_cases)} test cases")
+    
+    return suite
+
 # Add ComponentTester class to run the component tests
 
 class ComponentTester:
@@ -2399,6 +2645,7 @@ def parse_args():
     parser.add_argument('--suite-name', type=str, default='sentiment_analysis', help='Name of the test suite to use')
     parser.add_argument('--create-suite', action='store_true', help='Create a new default test suite')
     parser.add_argument('--progression', type=str, help='Run tests in progression order for a category or component')
+    parser.add_argument('--expand-suite', action='store_true', help='Expand the test suite with additional challenging cases')
     
     return parser.parse_args()
 
@@ -2424,6 +2671,26 @@ if __name__ == "__main__":
             sys.exit(0)
         except Exception as e:
             logger.error(f"Error creating test suite: {str(e)}")
+            logger.error(traceback.format_exc())
+            sys.exit(1)
+    elif args.expand_suite:
+        # Expand an existing test suite with additional cases
+        try:
+            # Load the latest test suite
+            suite = IncrementalTestSuite.get_latest_suite(args.suite_name)
+            if not suite:
+                logger.info(f"No existing test suite found with name: {args.suite_name}. Creating a new one.")
+                suite = create_default_test_suite()
+                
+            # Expand the test suite
+            expanded_suite = expand_test_suite(suite)
+            
+            # Save the expanded suite
+            suite_file = expanded_suite.save_suite()
+            logger.info(f"Expanded test suite saved to {suite_file}")
+            sys.exit(0)
+        except Exception as e:
+            logger.error(f"Error expanding test suite: {str(e)}")
             logger.error(traceback.format_exc())
             sys.exit(1)
     elif args.progression:
