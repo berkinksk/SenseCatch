@@ -6,7 +6,12 @@ import time
 from datetime import datetime
 import os
 import argparse
+import re
 from typing import List, Dict, Any, Optional, Set, Tuple
+from collections import defaultdict, Counter
+import numpy as np
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.cluster import KMeans
 
 # Configure enhanced logging with colors and formatting for console output
 class ColoredFormatter(logging.Formatter):
@@ -231,6 +236,380 @@ class DiagnosticEnsemble(SentimentEnsemble):
         
         return summary
 
+class ErrorAnalyzer:
+    """
+    Analyzes error patterns in test results to identify common failure modes
+    and suggest targeted improvements.
+    """
+    
+    def __init__(self):
+        """Initialize the error analyzer"""
+        self.error_features = defaultdict(list)
+        self.text_features = {}
+        self.failure_clusters = {}
+        self.impact_scores = {}
+        self.improvement_suggestions = []
+    
+    def extract_linguistic_features(self, text: str) -> Dict[str, Any]:
+        """
+        Extract linguistic features from text that might correlate with errors.
+        
+        Args:
+            text: The input text to analyze
+            
+        Returns:
+            Dict of features
+        """
+        # Text length features
+        char_count = len(text)
+        word_count = len(text.split())
+        
+        # Sentence structure
+        sentences = [s.strip() for s in re.split(r'[.!?]+', text) if s.strip()]
+        sentence_count = len(sentences)
+        avg_sentence_length = word_count / max(1, sentence_count)
+        
+        # Special pattern counts
+        negation_count = len(re.findall(r'\b(?:not|n\'t|never|no|none|nothing|nowhere)\b', text.lower()))
+        contrast_markers = len(re.findall(r'\b(?:but|however|although|though|despite|yet|while|whereas|nevertheless)\b', text.lower()))
+        question_marks = text.count('?')
+        exclamation_marks = text.count('!')
+        
+        # Advanced patterns
+        double_negation = 1 if re.search(r'\b(?:not|n\'t|never|no)\b.*\b(?:not|n\'t|never|no)\b', text.lower()) else 0
+        conditional = 1 if re.search(r'\b(?:if|unless|when|while)\b', text.lower()) else 0
+        sarcasm_indicators = len(re.findall(r'\b(?:great|fantastic|awesome|wonderful|amazing|brilliant|perfect)\b.*(?:awful|terrible|worst|disappointing|disaster)', text.lower()))
+        
+        # Sentiment words (simple approach)
+        positive_words = len(re.findall(r'\b(?:good|great|excellent|amazing|wonderful|fantastic|awesome|love|like|enjoy|best)\b', text.lower()))
+        negative_words = len(re.findall(r'\b(?:bad|terrible|awful|horrible|worst|hate|dislike|poor|disappointing|waste)\b', text.lower()))
+        sentiment_balance = positive_words - negative_words
+        
+        features = {
+            "char_count": char_count,
+            "word_count": word_count,
+            "sentence_count": sentence_count,
+            "avg_sentence_length": avg_sentence_length,
+            "negation_count": negation_count,
+            "contrast_markers": contrast_markers,
+            "question_marks": question_marks,
+            "exclamation_marks": exclamation_marks,
+            "double_negation": double_negation,
+            "conditional": conditional,
+            "sarcasm_indicators": sarcasm_indicators,
+            "positive_words": positive_words,
+            "negative_words": negative_words,
+            "sentiment_balance": sentiment_balance,
+            "contains_idiom": 1 if re.search(r'\b(?:piece of cake|break a leg|under the weather|hit the nail|out of the blue|on the fence|diamond in the rough)\b', text.lower()) else 0
+        }
+        
+        return features
+    
+    def analyze_errors(self, test_results: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Analyze test failures to identify patterns and suggest improvements.
+        
+        Args:
+            test_results: List of test result dictionaries
+            
+        Returns:
+            Dictionary with error analysis and improvement suggestions
+        """
+        # Separate successes and failures
+        failures = [result for result in test_results if not result["passed"]]
+        successes = [result for result in test_results if result["passed"]]
+        
+        if not failures:
+            return {
+                "error_count": 0,
+                "message": "No errors to analyze. All tests passed!",
+                "suggestions": []
+            }
+        
+        # Extract features from all texts
+        for result in test_results:
+            text = result["text"]
+            self.text_features[text] = self.extract_linguistic_features(text)
+        
+        # Group failures by category
+        category_failures = defaultdict(list)
+        for failure in failures:
+            for category in failure["categories"]:
+                category_failures[category].append(failure)
+        
+        # Calculate failure rates by category
+        category_stats = {}
+        for category, fails in category_failures.items():
+            total_in_category = sum(1 for result in test_results if category in result["categories"])
+            failure_rate = len(fails) / total_in_category if total_in_category > 0 else 0
+            category_stats[category] = {
+                "total": total_in_category,
+                "failures": len(fails),
+                "failure_rate": failure_rate
+            }
+        
+        # Identify common features in failed tests vs successful tests
+        feature_correlation = self._analyze_feature_correlation(failures, successes)
+        
+        # Cluster failures to find patterns
+        self._cluster_failures(failures)
+        
+        # Generate improvement suggestions
+        suggestions = self._generate_suggestions(failures, category_stats, feature_correlation)
+        
+        # Prepare analysis results
+        analysis = {
+            "error_count": len(failures),
+            "error_rate": len(failures) / len(test_results),
+            "category_stats": category_stats,
+            "feature_correlation": feature_correlation,
+            "failure_clusters": self.failure_clusters,
+            "improvement_suggestions": suggestions
+        }
+        
+        return analysis
+    
+    def _analyze_feature_correlation(self, failures: List[Dict[str, Any]], successes: List[Dict[str, Any]]) -> Dict[str, float]:
+        """Identify features that correlate with failures"""
+        if not failures or not successes:
+            return {}
+            
+        # Calculate average feature values for failures and successes
+        failure_features = {}
+        success_features = {}
+        
+        for feature in self.text_features[failures[0]["text"]].keys():
+            failure_values = [self.text_features[f["text"]][feature] for f in failures]
+            success_values = [self.text_features[s["text"]][feature] for s in successes]
+            
+            failure_avg = sum(failure_values) / len(failure_values)
+            success_avg = sum(success_values) / len(success_values)
+            
+            # Calculate difference (how much more prevalent in failures)
+            if success_avg == 0:
+                ratio = failure_avg * 2 if failure_avg > 0 else 0
+            else:
+                ratio = (failure_avg / success_avg) - 1
+                
+            failure_features[feature] = {
+                "failure_avg": failure_avg,
+                "success_avg": success_avg,
+                "difference_ratio": ratio
+            }
+        
+        # Sort by correlation strength (absolute difference ratio)
+        sorted_features = sorted(
+            failure_features.items(), 
+            key=lambda x: abs(x[1]["difference_ratio"]), 
+            reverse=True
+        )
+        
+        # Return top correlations
+        return {feature: data for feature, data in sorted_features if abs(data["difference_ratio"]) > 0.2}
+    
+    def _cluster_failures(self, failures: List[Dict[str, Any]], n_clusters: int = 3) -> None:
+        """Cluster similar failures together"""
+        if len(failures) < n_clusters:
+            # Not enough failures to cluster
+            self.failure_clusters = {
+                "clusters": [{"texts": [f["text"] for f in failures], "common_features": []}]
+            }
+            return
+            
+        # Get features for vectorization
+        texts = [f["text"] for f in failures]
+        
+        # Vectorize the texts
+        vectorizer = CountVectorizer(stop_words='english', ngram_range=(1, 2), max_features=50)
+        X = vectorizer.fit_transform(texts)
+        
+        # Add linguistic features to the mix
+        feature_names = ["negation_count", "contrast_markers", "sentiment_balance", 
+                        "double_negation", "conditional", "sarcasm_indicators"]
+        
+        linguistic_features = np.array([
+            [self.text_features[text][feature] for feature in feature_names]
+            for text in texts
+        ])
+        
+        # Normalize linguistic features
+        if linguistic_features.shape[0] > 0:
+            linguistic_features = linguistic_features / (linguistic_features.max(axis=0) + 1e-10)
+            
+            # Combine with text features
+            combined_features = np.hstack([
+                X.toarray(), 
+                linguistic_features
+            ])
+        else:
+            combined_features = X.toarray()
+        
+        # Cluster the failures
+        n_clusters = min(n_clusters, len(failures))
+        kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+        labels = kmeans.fit_predict(combined_features)
+        
+        # Group failures by cluster
+        clusters = defaultdict(list)
+        for i, label in enumerate(labels):
+            clusters[label].append({
+                "text": texts[i],
+                "features": {feature: self.text_features[texts[i]][feature] for feature in feature_names}
+            })
+        
+        # Extract common features for each cluster
+        cluster_info = []
+        for label, instances in clusters.items():
+            # Find common features
+            common_features = {}
+            for feature in feature_names:
+                values = [instance["features"][feature] for instance in instances]
+                avg_value = sum(values) / len(values)
+                
+                # Check if this feature is distinctively high in this cluster
+                is_distinctive = avg_value > 0.5  # Simple threshold
+                if is_distinctive:
+                    common_features[feature] = avg_value
+            
+            # Sort features by strength
+            sorted_features = sorted(common_features.items(), key=lambda x: x[1], reverse=True)
+            
+            cluster_info.append({
+                "texts": [instance["text"] for instance in instances],
+                "common_features": sorted_features
+            })
+        
+        self.failure_clusters = {
+            "clusters": cluster_info
+        }
+    
+    def _generate_suggestions(self, failures: List[Dict[str, Any]], 
+                             category_stats: Dict[str, Dict[str, Any]],
+                             feature_correlation: Dict[str, Dict[str, float]]) -> List[Dict[str, Any]]:
+        """Generate prioritized improvement suggestions"""
+        suggestions = []
+        
+        # Suggestion 1: Target high-failure-rate categories
+        high_failure_categories = {
+            cat: stats for cat, stats in category_stats.items() 
+            if stats["failure_rate"] > 0.3 and stats["total"] >= 3
+        }
+        
+        if high_failure_categories:
+            # Sort by failure rate * count
+            sorted_categories = sorted(
+                high_failure_categories.items(),
+                key=lambda x: x[1]["failure_rate"] * x[1]["failures"],
+                reverse=True
+            )
+            
+            for cat, stats in sorted_categories[:3]:  # Top 3 problem categories
+                examples = [f["text"] for f in failures if cat in f["categories"]][:2]  # 2 examples max
+                
+                suggestions.append({
+                    "type": "category_focus",
+                    "focus_area": cat,
+                    "failure_rate": stats["failure_rate"] * 100,
+                    "impact_score": stats["failure_rate"] * stats["failures"] / len(failures),
+                    "suggestion": f"Improve handling of '{cat}' patterns - {stats['failures']} failures ({stats['failure_rate']*100:.1f}% failure rate)",
+                    "examples": examples
+                })
+        
+        # Suggestion 2: Address prevalent linguistic features
+        if feature_correlation:
+            # Get top 3 correlated features
+            top_features = list(feature_correlation.items())[:3]
+            
+            for feature, data in top_features:
+                # Create human-readable feature name
+                feature_name = " ".join(feature.split("_")).title()
+                
+                if data["difference_ratio"] > 0:
+                    # More common in failures
+                    suggestion = f"Improve handling of text with {feature_name} (avg {data['failure_avg']:.1f} in failures vs {data['success_avg']:.1f} in successes)"
+                else:
+                    # Less common in failures - this is unusual, might need special handling
+                    suggestion = f"Examine why texts with low {feature_name} fail less often"
+                
+                examples = []
+                for f in failures[:3]:  # Get up to 3 examples
+                    if self.text_features[f["text"]][feature] > 0:
+                        examples.append(f["text"])
+                
+                if examples:
+                    suggestions.append({
+                        "type": "linguistic_feature",
+                        "focus_area": feature,
+                        "impact_score": abs(data["difference_ratio"]) * 0.8,  # Slightly lower priority than categories
+                        "suggestion": suggestion,
+                        "examples": examples[:2]  # Limit to 2 examples
+                    })
+        
+        # Suggestion 3: Look at failure clusters
+        for i, cluster in enumerate(self.failure_clusters.get("clusters", [])):
+            if len(cluster["texts"]) >= 2:  # Only consider clusters with multiple failures
+                # Extract significant features
+                feature_desc = []
+                for feature, value in cluster["common_features"][:2]:  # Top 2 features
+                    feature_name = " ".join(feature.split("_")).title()
+                    feature_desc.append(f"{feature_name} ({value:.1f})")
+                
+                feature_text = " and ".join(feature_desc) if feature_desc else "mixed patterns"
+                
+                suggestions.append({
+                    "type": "cluster_improvement",
+                    "focus_area": f"cluster_{i+1}",
+                    "impact_score": len(cluster["texts"]) / len(failures) * 0.7,  # Lower priority than direct features
+                    "suggestion": f"Address failure cluster with {feature_text} ({len(cluster['texts'])} similar failures)",
+                    "examples": cluster["texts"][:2]  # Limit to 2 examples
+                })
+        
+        # Sort suggestions by impact score
+        return sorted(suggestions, key=lambda x: x["impact_score"], reverse=True)
+    
+    def print_analysis_report(self, analysis: Dict[str, Any]) -> None:
+        """Print a formatted analysis report"""
+        if analysis["error_count"] == 0:
+            logger.info("✓ All tests passed! No error analysis needed.")
+            return
+            
+        logger.info("\n===== ERROR ANALYSIS REPORT =====")
+        logger.info(f"Total errors: {analysis['error_count']} ({analysis['error_rate']*100:.1f}% of tests)")
+        
+        # Print category stats
+        logger.info("\n--- Category Performance ---")
+        sorted_cats = sorted(
+            analysis["category_stats"].items(),
+            key=lambda x: x[1]["failure_rate"],
+            reverse=True
+        )
+        
+        for cat, stats in sorted_cats:
+            if stats["total"] > 0:
+                logger.info(f"{cat}: {stats['failure_rate']*100:.1f}% failure rate ({stats['failures']}/{stats['total']})")
+        
+        # Print top correlated features
+        if analysis["feature_correlation"]:
+            logger.info("\n--- Linguistic Features Correlated with Failures ---")
+            for feature, data in analysis["feature_correlation"].items():
+                feature_name = " ".join(feature.split("_")).title()
+                logger.info(f"{feature_name}: {data['failure_avg']:.2f} in failures vs {data['success_avg']:.2f} in successes")
+        
+        # Print improvement suggestions
+        if analysis["improvement_suggestions"]:
+            logger.info("\n--- Prioritized Improvement Suggestions ---")
+            for i, suggestion in enumerate(analysis["improvement_suggestions"]):
+                logger.info(f"{i+1}. {suggestion['suggestion']} (Impact: {suggestion['impact_score']:.2f})")
+                if suggestion["examples"]:
+                    for j, example in enumerate(suggestion["examples"]):
+                        logger.info(f"   Example {j+1}: \"{example}\"")
+    
+    def save_analysis(self, analysis: Dict[str, Any], output_path: str) -> None:
+        """Save the analysis to a JSON file"""
+        with open(output_path, 'w') as f:
+            json.dump(analysis, f, indent=2)
+        logger.info(f"Error analysis saved to {output_path}")
+
 def test_sentiment_analysis(categories: Optional[List[str]] = None,
                            models: Optional[List[str]] = None,
                            enable_debug: bool = False,
@@ -257,6 +636,9 @@ def test_sentiment_analysis(categories: Optional[List[str]] = None,
         # Create results directory if it doesn't exist
         if not os.path.exists('test_results'):
             os.makedirs('test_results')
+        
+        # Initialize error analyzer
+        error_analyzer = ErrorAnalyzer()
         
         # Define test cases
         test_cases = [
@@ -706,6 +1088,27 @@ def test_sentiment_analysis(categories: Optional[List[str]] = None,
         if previous_results:
             compare_results(results, previous_results)
         
+        # Analyze errors for each model
+        for model_name, model_result in results.items():
+            # Run error analysis
+            analysis = error_analyzer.analyze_errors(model_result["test_results"])
+            
+            # Print analysis report
+            error_analyzer.print_analysis_report(analysis)
+            
+            # Save analysis to file
+            analysis_file = f"test_results/error_analysis_{model_name}_{timestamp}.json"
+            error_analyzer.save_analysis(analysis, analysis_file)
+            
+            # Add analysis summary to results
+            results[model_name]["error_analysis"] = {
+                "summary": {
+                    "error_count": analysis["error_count"],
+                    "error_rate": analysis["error_rate"],
+                    "top_suggestions": [s["suggestion"] for s in analysis["improvement_suggestions"][:3]] if "improvement_suggestions" in analysis else []
+                }
+            }
+        
         return results
     
     except Exception as e:
@@ -806,6 +1209,10 @@ def parse_args():
     # Comparison options
     parser.add_argument('--compare', type=str, help='Compare with previous results (timestamp or "latest")')
     
+    # Error analysis options
+    parser.add_argument('--skip-analysis', action='store_true', help='Skip error analysis step')
+    parser.add_argument('--analysis-only', action='store_true', help='Only run error analysis on latest results')
+    
     return parser.parse_args()
 
 if __name__ == "__main__":
@@ -821,10 +1228,53 @@ if __name__ == "__main__":
     categories = args.categories.split(',') if args.categories else None
     models = args.models.split(',') if args.models else None
     
-    # Run tests with specified options
-    test_sentiment_analysis(
-        categories=categories,
-        models=models,
-        enable_debug=args.debug,
-        compare_with=args.compare
-    ) 
+    if args.analysis_only:
+        # Only run error analysis on latest results
+        try:
+            # Find latest results file
+            results_files = sorted([f for f in os.listdir("test_results") 
+                                if f.startswith("sentiment_test_results_") and f.endswith(".json")],
+                                key=lambda x: x.split("_")[-1].split(".")[0],
+                                reverse=True)
+            
+            if not results_files:
+                logger.error("No test results found for analysis")
+                sys.exit(1)
+                
+            # Load latest results
+            latest_file = os.path.join("test_results", results_files[0])
+            logger.info(f"Running analysis on latest results: {latest_file}")
+            
+            with open(latest_file, 'r') as f:
+                results = json.load(f)
+            
+            # Initialize error analyzer
+            error_analyzer = ErrorAnalyzer()
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            # Analyze each model's results
+            for model_name, model_result in results.items():
+                # Run error analysis
+                analysis = error_analyzer.analyze_errors(model_result["test_results"])
+                
+                # Print analysis report
+                error_analyzer.print_analysis_report(analysis)
+                
+                # Save analysis to file
+                analysis_file = f"test_results/error_analysis_{model_name}_{timestamp}.json"
+                error_analyzer.save_analysis(analysis, analysis_file)
+            
+            sys.exit(0)
+        except Exception as e:
+            logger.error(f"Error during analysis: {str(e)}")
+            logger.error(traceback.format_exc())
+            sys.exit(1)
+    else:
+        # Run tests with specified options
+        test_sentiment_analysis(
+            categories=categories,
+            models=models,
+            enable_debug=args.debug,
+            compare_with=args.compare
+        ) 
