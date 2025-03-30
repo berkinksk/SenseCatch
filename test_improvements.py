@@ -651,8 +651,13 @@ class ErrorAnalyzer:
         if not failures:
             return {
                 "error_count": 0,
+                "error_rate": 0.0,
                 "message": "No errors to analyze. All tests passed!",
-                "suggestions": []
+                "suggestions": [],
+                "category_stats": {},
+                "feature_correlation": {},
+                "failure_clusters": {},
+                "improvement_suggestions": []
             }
         
         # Extract features from all texts
