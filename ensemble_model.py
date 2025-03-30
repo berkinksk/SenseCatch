@@ -392,6 +392,18 @@ class SentimentEnsemble:
         # Convert to lowercase
         text_lower = text.lower()
         
+        # Add debug logging
+        logger.info(f"_handle_simple_cases checking text: '{text_lower}'")
+        
+        # Add specific handling for "isn't bad" phrase and variations
+        if "isn't bad" in text_lower or "isnt bad" in text_lower or "is not bad" in text_lower:
+            logger.info(f"Explicit 'isn't bad' positive sentiment detected")
+            return True, 1, 0.85  # Positive sentiment with moderate confidence
+        
+        if "not bad" in text_lower:
+            logger.info(f"Explicit 'not bad' positive sentiment detected")
+            return True, 1, 0.82  # Positive sentiment with moderate confidence
+        
         # Define negation words
         negation_words = ['not', 'no', 'never', 'don\'t', 'doesn\'t', 'didn\'t', 'haven\'t', 
                           'hasn\'t', 'hadn\'t', 'can\'t', 'cannot', 'couldn\'t', 'shouldn\'t', 
@@ -408,10 +420,9 @@ class SentimentEnsemble:
         # Check for recommendation context
         recommendation_context = ['recommend', 'recommendation', 'advise', 'endorse', 'suggest']
         
-        # Define complex negation cases
-        # NEW: Explicit negated phrase mapping with direct sentiment values
+        # Define complex negation cases - ENHANCED FOR ISN'T BAD CASES
         explicit_negated_phrases = {
-            # Strong negative expressions
+            # Negative phrases
             "don't recommend": (0, 0.92),  # Negative with high confidence
             "doesn't recommend": (0, 0.92),
             "wouldn't recommend": (0, 0.93),
@@ -422,16 +433,23 @@ class SentimentEnsemble:
             "not worth": (0, 0.85),
             "not recommended": (0, 0.91),
             
-            # Strong positive expressions
+            # Positive phrases
             "highly recommend": (1, 0.92),
             "strongly recommend": (1, 0.93),
             "definitely recommend": (1, 0.94),
             "absolutely recommend": (1, 0.94),
             "would recommend": (1, 0.9),
             
-            # Double negative expressions (positive)
+            # EXPANDED: Double negative expressions (positive) - more variations
             "not disappointed": (1, 0.8),
-            "not bad at all": (1, 0.82),
+            "not bad at all": (1, 0.84),
+            "isn't bad at all": (1, 0.85),
+            "isn't bad": (1, 0.83),
+            "is not bad": (1, 0.83),
+            "not that bad": (1, 0.81),
+            "isn't terrible": (1, 0.82),
+            "is not terrible": (1, 0.82),
+            "isn't awful": (1, 0.82),
             "no complaints": (1, 0.85),
             "never been disappointed": (1, 0.87),
             
@@ -442,7 +460,7 @@ class SentimentEnsemble:
             "failed within": (0, 0.89)
         }
         
-        # NEW: Check for explicit negated phrases first
+        # Check for explicit negated phrases with more detailed logging
         for phrase, (sentiment, confidence) in explicit_negated_phrases.items():
             if phrase in text_lower:
                 logger.info(f"Explicit phrase match: '{phrase}' → {sentiment} ({confidence:.2f})")
@@ -460,6 +478,7 @@ class SentimentEnsemble:
                         # If negation is within 5 words of the positive phrase
                         if 0 <= phrase_pos - neg_pos <= 30:  # Approx 5 words with spaces
                             # Negated positive is negative
+                            logger.info(f"Negated positive phrase: '{neg}...{pos_phrase}' → negative")
                             return True, 0, 0.85
                 
                 # If not negated, it's positive
@@ -519,6 +538,9 @@ class SentimentEnsemble:
                 'weren\'t', 'nor', 'neither', 'hardly', 'barely', 'scarcely'
             ]
             
+            # Add debug logging for the input text
+            logger.info(f"handle_negations processing text: '{text}'")
+            
             # Special phrases where negation reverses meaning completely
             positive_negation_phrases = {
                 "isn't bad": "is good",
@@ -536,6 +558,13 @@ class SentimentEnsemble:
                 "no complaints": "satisfied",
                 "can't complain": "satisfied"
             }
+            
+            # Add debug logging for phrase checks
+            text_lower = text.lower()
+            logger.info(f"Checking for special phrases in: '{text_lower}'")
+            for phrase in positive_negation_phrases.keys():
+                if phrase in text_lower:
+                    logger.info(f"FOUND positive phrase '{phrase}' in text")
             
             # NEW: Critical negated compound phrases with sentiment overrides
             compound_negated_phrases = {
@@ -564,7 +593,7 @@ class SentimentEnsemble:
             
             # NEW: Check for compound negated phrases with highest priority
             for phrase, override in compound_negated_phrases.items():
-                if phrase in text.lower():
+                if phrase in text_lower:
                     logger.info(f"Compound negation phrase detected: '{phrase}' → {override['sentiment']}")
                     special_phrase_detected = True
                     detected_phrase = phrase
@@ -579,11 +608,16 @@ class SentimentEnsemble:
                 "definitely not bad", "certainly not bad"
             ]
             
+            # Debug logging for special positive phrases
+            for phrase in special_positive_override_phrases:
+                if phrase in text_lower:
+                    logger.info(f"FOUND special positive override phrase: '{phrase}'")
+            
             # Only check for other phrases if we haven't found a compound negated phrase
             if not special_phrase_detected:
                 # More explicit checks for special phrases
                 for phrase in special_positive_override_phrases:
-                    if phrase in text.lower():
+                    if phrase in text_lower:
                         logger.info(f"Special STRONG positive override phrase detected: '{phrase}'")
                         forced_sentiment = "positive"
                         detected_phrase = phrase
@@ -594,7 +628,7 @@ class SentimentEnsemble:
                 # Check for standard special phrases
                 if not special_phrase_detected:
                     for phrase, replacement in positive_negation_phrases.items():
-                        if phrase in text.lower():
+                        if phrase in text_lower:
                             logger.info(f"Special negation phrase detected: '{phrase}' → '{replacement}'")
                             # Only store the first detection as primary
                             if not special_phrase_detected:
@@ -695,7 +729,6 @@ class SentimentEnsemble:
                         forced_confidence = 0.93
             
             # Third pass: build the result with proper negation marking
-            in_special_phrase = False
             for i, word in enumerate(words):
                 if i in negation_scope and not word.lower() in ['and', 'the', 'a', 'an', 'to', 'of', 'in']:
                     # Mark word as negated
@@ -711,26 +744,30 @@ class SentimentEnsemble:
                         "negated": False
                     })
             
+            # Special phrase info dictionary to return
+            special_phrase_info = {
+                'special_phrase_detected': special_phrase_detected,
+                'detected_phrase': detected_phrase,
+                'forced_sentiment': forced_sentiment,
+                'forced_confidence': forced_confidence,
+                'has_nor_construction': has_nor_construction
+            }
+            
             # Convert result to the format expected by the rest of the code
-            if all(isinstance(item, dict) for item in result):
+            if result and all(isinstance(item, dict) for item in result):
                 # Return the modified text with negation markers and special phrase info
-                logger.info(f"Processed negation in text: {' '.join(item['modified'] for item in result)}")
-                return ' '.join(item['modified'] for item in result), result, {
-                    'special_phrase_detected': special_phrase_detected,
-                    'detected_phrase': detected_phrase,
-                    'forced_sentiment': forced_sentiment,
-                    'forced_confidence': forced_confidence,
-                    'has_nor_construction': has_nor_construction
-                }
+                processed_text = ' '.join(item['modified'] for item in result)
+                logger.info(f"Processed negation in text: {processed_text}")
+                return processed_text, result, special_phrase_info
             else:
-                # Backwards compatibility
+                # Backwards compatibility - ensure we return three values
                 logger.warning("Negation handling returned unexpected format")
-                return text, [], {'special_phrase_detected': False}
+                return text, [], special_phrase_info
                 
         except Exception as e:
             logger.error(f"Error in handle_negations: {str(e)}")
             logger.error(traceback.format_exc())
-            # Return original text if there's an error
+            # Return original text if there's an error - ensure we return three values
             return text, [], {'special_phrase_detected': False}
     
     def process_contrast_markers(self, text):
@@ -1000,6 +1037,10 @@ class SentimentEnsemble:
     def clean_text(self, text):
         """Enhanced text cleaning with entity recognition and negation handling"""
         try:
+            # Initialize default values in case negation handling fails
+            negation_markers = []
+            special_phrase_info = {'special_phrase_detected': False}
+            
             # Handle potential movie titles first
             text_with_titles = self.identify_movie_titles(text)
             
@@ -1051,7 +1092,7 @@ class SentimentEnsemble:
                 text, negation_markers, special_phrase_info = self.handle_negations(text)
             except Exception as e:
                 logger.error(f"Negation handling failed: {e}")
-                # Continue without negation handling
+                # Continue without negation handling - values already initialized
             
             # Remove extra whitespace
             text = re.sub(r'\s+', ' ', text).strip()
@@ -1382,6 +1423,19 @@ class SentimentEnsemble:
         """
         Make a prediction using a specific model.
         """
+        # Check simple case first
+        simple_case_result = self._handle_simple_cases(text, model_name)
+        if simple_case_result:
+            is_simple, sentiment, confidence = simple_case_result
+            if is_simple:
+                logger.info(f"Simple case detected with {model_name}: {sentiment} with {confidence:.2f}% confidence")
+                return {
+                    "text": text,
+                    "sentiment": "Positive" if sentiment == 1 else "Negative",
+                    "confidence": confidence * 100,
+                    "model_used": f"{model_name}_simple_case"
+                }
+        
         # Set default values if not provided
         if sarcasm_info is None:
             sarcasm_info = self._detect_sarcasm(text)
@@ -1456,7 +1510,7 @@ class SentimentEnsemble:
                     "confidence": sarcasm_info[1],
                     "model_used": f"{model_name}_sarcasm_detection"
                 }
-            
+        
         if idiom_info:
             # Check if idiom_info is a dictionary or tuple
             if isinstance(idiom_info, dict):
@@ -1505,19 +1559,6 @@ class SentimentEnsemble:
                     "sentiment": contradiction_info[0],
                     "confidence": contradiction_info[1],
                     "model_used": f"{model_name}_contradiction_detection"
-                }
-        
-        # Check for simple case results before using the model
-        simple_result = self._handle_simple_cases(text)
-        if simple_result:
-            is_simple, sentiment, confidence = simple_result
-            if is_simple and confidence >= 80.0:
-                logger.info(f"Simple case detected: returning {sentiment} with {confidence}% confidence")
-                return {
-                    "text": text,
-                    "sentiment": sentiment,
-                    "confidence": confidence,
-                    "model_used": f"{model_name}_simple_case"
                 }
         
         # Use the model
@@ -1653,9 +1694,21 @@ class SentimentEnsemble:
         prediction_result = {}
         text = str(text)
         
-        simple_case_override = None
-        # First check if this is a simple case
+        # First check if this is a simple case - MOVED TO TOP PRIORITY
         simple_case_result = self._handle_simple_cases(text)
+        if simple_case_result:
+            is_simple, sentiment, confidence = simple_case_result
+            if is_simple:
+                logger.info(f"[{modelname if modelname else 'default'}] Simple case detected: {sentiment} with {confidence:.2f}% confidence")
+                return {
+                    "text": text,
+                    "sentiment": "Positive" if sentiment == 1 else "Negative",
+                    "confidence": confidence * 100, 
+                    "model_used": f"{modelname if modelname else 'default'}_simple_case"
+                }
+        
+        # Store simple case for later use if needed
+        simple_case_override = None
         if simple_case_result:
             is_simple, sentiment, confidence = simple_case_result
             if is_simple:
@@ -1674,6 +1727,20 @@ class SentimentEnsemble:
                 "confidence": neutral_confidence, 
                 "model_used": f"{modelname if modelname else 'default'}_with_neutral_detection"
             }
+        
+        # Check special phrase info from negation handling
+        if special_phrase_info and special_phrase_info.get('special_phrase_detected', False):
+            forced_sentiment = special_phrase_info.get('forced_sentiment')
+            forced_confidence = special_phrase_info.get('forced_confidence', 0.85)
+            if forced_sentiment:
+                sentiment_text = "Positive" if forced_sentiment == "positive" else "Negative"
+                logger.info(f"[{modelname if modelname else 'default'}] Special phrase detected: {special_phrase_info.get('detected_phrase')} → {sentiment_text}")
+                return {
+                    "text": text,
+                    "sentiment": sentiment_text,
+                    "confidence": forced_confidence * 100,
+                    "model_used": f"{modelname if modelname else 'default'}_special_phrase"
+                }
         
         # Perform a safety check
         safety_result = self.safety_check(text)
@@ -1926,6 +1993,11 @@ class SentimentEnsemble:
         # Process contrast markers to get separate parts
         contrast_info = self.process_contrast_markers(text)
         
+        # Make sure contrast_info is a dictionary before using get()
+        if not isinstance(contrast_info, dict):
+            logger.error(f"process_contrast_markers returned unexpected type: {type(contrast_info)}")
+            return None
+        
         if not contrast_info.get("has_contrast", False):
             return None
             
@@ -2058,6 +2130,77 @@ class SentimentEnsemble:
                         return True, "Negative", 80.0
         
         return False, None, 0.0
+
+    def test_component(self, component_name, input_text, expected_output):
+        """
+        Test individual components of the sentiment analysis system.
+        
+        Args:
+            component_name: The name of the component to test
+            input_text: The text to process
+            expected_output: The expected result
+            
+        Returns:
+            Dict with test results
+        """
+        result = {
+            "component": component_name,
+            "input": input_text,
+            "expected": expected_output,
+            "output": None,
+            "success": False,
+            "error": None
+        }
+        
+        try:
+            # Test the appropriate component
+            if component_name == "handle_negations":
+                processed_text, markers, info = self.handle_negations(input_text)
+                result["output"] = (processed_text, markers, info)
+                # Success will be determined by the caller
+            
+            elif component_name == "process_contrast_markers":
+                contrast_info = self.process_contrast_markers(input_text)
+                result["output"] = contrast_info
+                
+                # Check if essential keys match the expected output
+                if isinstance(expected_output, dict) and isinstance(contrast_info, dict):
+                    has_contrast_match = contrast_info.get("has_contrast") == expected_output.get("has_contrast")
+                    
+                    if has_contrast_match:
+                        if contrast_info.get("has_contrast"):
+                            marker_match = contrast_info.get("contrast_marker") == expected_output.get("contrast_marker")
+                            result["success"] = marker_match
+                        else:
+                            result["success"] = True
+            
+            elif component_name == "detect_sarcasm":
+                # Call _detect_sarcasm if it exists
+                if hasattr(self, "_detect_sarcasm"):
+                    sarcasm_result = self._detect_sarcasm(input_text)
+                    
+                    # Convert tuple result to dictionary for consistent testing
+                    if isinstance(sarcasm_result, tuple) and len(sarcasm_result) >= 3:
+                        sentiment, confidence, pattern_type = sarcasm_result
+                        result["output"] = {
+                            "sarcasm_detected": True,
+                            "sentiment": sentiment,
+                            "confidence": confidence,
+                            "type": pattern_type
+                        }
+                    else:
+                        result["output"] = {"sarcasm_detected": False}
+                else:
+                    result["error"] = "Method _detect_sarcasm not implemented"
+            
+            else:
+                result["error"] = f"Unknown component: {component_name}"
+                
+        except Exception as e:
+            result["error"] = f"Error testing component {component_name}: {str(e)}"
+            result["exception"] = traceback.format_exc()
+        
+        return result
 
 # Add the load_models function after the class definition
 

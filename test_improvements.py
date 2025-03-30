@@ -250,8 +250,11 @@ class DiagnosticEnsemble(SentimentEnsemble):
                    timing=time.time() - start_time)
         
         # In a real implementation, this would transform the sentiment values
-        # For testing, just return the original text
-        return text
+        # For testing, return a tuple to match the parent class format:
+        # (processed_text, negation_markers, special_phrase_info)
+        empty_markers = []
+        empty_info = {'special_phrase_detected': False}
+        return processed_text, empty_markers, empty_info
     
     def process_contrast_markers(self, text):
         """Process contrast markers in the text with diagnostics"""
@@ -276,10 +279,17 @@ class DiagnosticEnsemble(SentimentEnsemble):
         contrasts_found = []
         
         # Check for contrast markers
+        found_contrast = False
+        contrast_marker = None
+        text_before = ""
+        text_after = ""
+        
         for marker in contrast_markers:
             pattern = r'\b' + re.escape(marker) + r'\b'
             matches = re.finditer(pattern, text, re.IGNORECASE)
             for match in matches:
+                found_contrast = True
+                contrast_marker = marker
                 marker_pos = match.start()
                 
                 # Split text around the contrast marker
@@ -295,6 +305,12 @@ class DiagnosticEnsemble(SentimentEnsemble):
                     "weight_before": contrast_weight_before,
                     "weight_after": contrast_weight_after
                 })
+                
+                # Only process the first contrast marker found
+                break
+                
+            if found_contrast:
+                break
         
         # Record diagnostics for contrast processing
         self._trace("process_contrast_markers", "Contrast marker processing complete", 
@@ -304,9 +320,24 @@ class DiagnosticEnsemble(SentimentEnsemble):
                    },
                    timing=time.time() - start_time)
         
-        # In a real implementation, this would transform the sentiment values
-        # For testing, just return the original text
-        return text
+        # Return a dictionary structure matching the parent class format
+        if found_contrast:
+            return {
+                "has_contrast": True,
+                "before": text_before,
+                "after": text_after,
+                "before_weight": contrast_weight_before,
+                "after_weight": contrast_weight_after,
+                "contrast_marker": contrast_marker,
+                "has_forced_positive": False,
+                "has_forced_negative": False
+            }
+        else:
+            return {
+                "has_contrast": False,
+                "full_text": text,
+                "weight": 1.0
+            }
     
     def predict(self, text, *args, **kwargs):
         """Make a prediction with diagnostic tracing"""
