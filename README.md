@@ -11,7 +11,7 @@ SenseCatch is a sophisticated sentiment analysis system designed to understand a
   - Contrast markers (e.g., "despite", "however", "but")
   - Idiom recognition with semantic override capabilities
   - Mixed sentiment analysis
-- **Neural-Symbolic Integration**: Combines statistical ML models with explicit symbolic rules for improved interpretability
+- **Rule-Based Enhancements**: Augments statistical models with explicit linguistic rules for improved accuracy on edge cases
 - **Comprehensive Testing Framework**: Rigorous validation with extensive test cases and diagnostic tools
 - **Performance Visualization**: Detailed graphical reports on model performance
 
@@ -114,26 +114,31 @@ The testing framework generates comprehensive HTML reports with:
 - **Linguistic Pattern Processing**:
   - Advanced negation scope detection with context window analysis
   - Double and triple negation resolution algorithms
-  - Sarcasm detection using lexical incongruity patterns
+  - Sarcasm detection with pattern recognition
   - Idiom recognition with semantic override capabilities
 
 ## Empirical Evaluation
 
-The system has been rigorously evaluated on multiple datasets:
+Our recent test results from the diagnostic framework show:
 
-| Model Configuration | IMDb Reviews | Twitter Sentiment | STS-Gold | Custom Edge Cases |
-|---------------------|-------------|-------------------|----------|------------------|
-| Naive Bayes         | 86.3%       | 81.7%             | 79.4%    | 53.1%            |
-| Logistic Regression | 88.7%       | 82.5%             | 80.1%    | 53.1%            |
-| Ensemble (Weighted) | 89.5%       | 83.9%             | 82.3%    | 67.8%*           |
+| Model | Overall Accuracy | Challenging Cases |
+|-------|-----------------|-------------------|
+| Naive Bayes | 81.25% | Variable performance on negation (57%) |
+| Logistic Regression | 81.25% | Strong on sarcasm (100%), weaker on contradiction |
+| Combined Analysis | - | Perfect performance on idioms and conclusion markers |
 
-*After implementing neural-symbolic integrations
+Performance varies significantly by linguistic category:
+- Sarcasm detection: ~100% accuracy
+- Idiom recognition: ~100% accuracy
+- Negation handling: ~57% accuracy
+- Contrast handling: ~67% accuracy
+- Contradiction cases: Needs improvement
 
 ## Project Structure
 
-- `ensemble_model.py`: Core sentiment analysis engine
+- `ensemble_model.py`: Core sentiment analysis engine with `SentimentEnsemble` class
 - `train_models.py`: Model training scripts
-- `test_improvements.py`: Testing framework with diagnostics
+- `test_improvements.py`: Testing framework with diagnostics (`DiagnosticEnsemble` class)
 - `test_visualizer.py`: Visualization generator
 - `run_tests.py`: Command-line test runner
 - `data/`: Training and validation datasets
