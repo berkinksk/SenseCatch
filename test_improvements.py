@@ -7,11 +7,13 @@ from datetime import datetime
 import os
 import argparse
 import re
-from typing import List, Dict, Any, Optional, Set, Tuple
+import copy
+from typing import List, Dict, Any, Optional, Set, Tuple, Callable
 from collections import defaultdict, Counter
 import numpy as np
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.cluster import KMeans
+import nltk
 
 # Configure enhanced logging with colors and formatting for console output
 class ColoredFormatter(logging.Formatter):
@@ -30,6 +32,10 @@ class ColoredFormatter(logging.Formatter):
         self.use_color = use_color
     
     def format(self, record):
+        # Replace Unicode arrow with ASCII equivalent in the log message
+        if hasattr(record, 'msg') and isinstance(record.msg, str):
+            record.msg = record.msg.replace('→', '->')
+        
         log_message = super().format(record)
         if not self.use_color:
             return log_message
@@ -76,7 +82,7 @@ def setup_logging(log_level=logging.INFO, use_color=True):
 logger = logging.getLogger(__name__)
 
 try:
-    from ensemble_model import SentimentEnsemble
+    from ensemble_model import SentimentEnsemble, load_models
 except ImportError:
     logger.error("Could not import SentimentEnsemble. Make sure your environment is correctly set up.")
     sys.exit(1)
@@ -89,6 +95,8 @@ class DiagnosticEnsemble(SentimentEnsemble):
         self.decision_points = []
         self.state_snapshots = {}
         self.timing_data = {}
+        # Initialize component results storage
+        self.component_results = {}
         super().__init__(*args, **kwargs)
     
     def _trace(self, stage, message, state=None, decision=None, timing=None):
@@ -119,6 +127,7 @@ class DiagnosticEnsemble(SentimentEnsemble):
         self.decision_points = []
         self.state_snapshots = {}
         self.timing_data = {}
+        self.component_results = {}
     
     # Override key methods to add tracing
     
@@ -235,6 +244,324 @@ class DiagnosticEnsemble(SentimentEnsemble):
         }
         
         return summary
+
+    # Add new methods for component isolation testing
+    
+    def test_component(self, component_name: str, text: str, expected_output: Any = None, **kwargs) -> Dict[str, Any]:
+        """
+        Test an individual pipeline component in isolation.
+        
+        Args:
+            component_name: Name of the component to test
+            text: Input text to process
+            expected_output: Expected output (if applicable for validation)
+            kwargs: Additional arguments specific to the component
+            
+        Returns:
+            Dictionary with test results
+        """
+        start_time = time.time()
+        result = None
+        error = None
+        
+        try:
+            # Map component name to method
+            component_map = {
+                "clean_text": self.clean_text,
+                "handle_negations": self.handle_negations,
+                "process_contrast_markers": self.process_contrast_markers,
+                "detect_sarcasm": self._detect_sarcasm,
+                "detect_idioms": self._detect_idioms,
+                "detect_contradiction": self._detect_contradiction,
+                "detect_neutral": self._detect_neutral_sentiment
+            }
+            
+            if component_name not in component_map:
+                raise ValueError(f"Unknown component: {component_name}")
+            
+            # Call the component with the input text
+            result = component_map[component_name](text, **kwargs)
+            
+        except Exception as e:
+            error = str(e)
+            logger.error(f"Error testing component {component_name}: {error}")
+        
+        duration = time.time() - start_time
+        
+        # Format the result for consistency
+        component_result = {
+            "component": component_name,
+            "input": text,
+            "output": result,
+            "expected": expected_output,
+            "duration_ms": duration * 1000,
+            "error": error
+        }
+        
+        # If expected output is provided, check if the result matches
+        if expected_output is not None:
+            if component_name == "clean_text":
+                # For clean_text, compare first return value (cleaned text)
+                component_result["success"] = result[0] == expected_output
+            elif component_name == "handle_negations":
+                # For handle_negations, compare first return value
+                component_result["success"] = result[0] == expected_output
+            elif isinstance(result, dict) and isinstance(expected_output, dict):
+                # For components returning dicts, check for matching keys
+                component_result["success"] = all(result.get(k) == v for k, v in expected_output.items())
+            else:
+                # Direct comparison for other components
+                component_result["success"] = result == expected_output
+        
+        # Store the result
+        self.component_results[component_name] = component_result
+        
+        return component_result
+    
+    def test_component_pipeline(self, pipeline: List[Dict[str, Any]], text: str) -> Dict[str, Any]:
+        """
+        Test a sequence of components as a pipeline.
+        
+        Args:
+            pipeline: List of component configurations with name and params
+            text: Input text to process
+            
+        Returns:
+            Dictionary with test results for each step
+        """
+        current_text = text
+        pipeline_results = []
+        start_time = time.time()
+        
+        for step in pipeline:
+            component_name = step["component"]
+            params = step.get("params", {})
+            expected = step.get("expected_output", None)
+            
+            # Run the component with the current text
+            result = self.test_component(component_name, current_text, expected, **params)
+            pipeline_results.append(result)
+            
+            # Update the current text for the next component if needed
+            if component_name == "clean_text" and result["output"]:
+                current_text = result["output"][0]  # First element is the cleaned text
+            elif component_name == "handle_negations" and result["output"]:
+                current_text = result["output"][0]  # First element is processed text
+        
+        total_duration = time.time() - start_time
+        
+        return {
+            "pipeline_results": pipeline_results,
+            "input_text": text,
+            "final_text": current_text,
+            "total_duration_ms": total_duration * 1000
+        }
+    
+    def measure_component_impact(self, text: str, expected_sentiment: str) -> Dict[str, Any]:
+        """
+        Measure the impact of each component on the final sentiment prediction.
+        Works by toggling components on/off to see how they affect the result.
+        
+        Args:
+            text: Input text to analyze
+            expected_sentiment: Expected sentiment for validation
+            
+        Returns:
+            Dictionary with impact measurements
+        """
+        # Baseline prediction with all components
+        baseline = self.predict(text)
+        baseline_correct = baseline["sentiment"] == expected_sentiment
+        
+        # Define the components to test and their parameter names
+        component_param_map = {
+            "sarcasm_detection": "use_sarcasm_detection",
+            "idiom_detection": "use_idiom_detection", 
+            "contradiction_detection": "use_contradiction_detection",
+            "contrast_handling": "contrast_handling",  # Handled specially
+            "neutral_detection": "neutral_detection",  # Handled specially
+            "negation_handling": "negation_handling"   # Handled specially
+        }
+        
+        impact_results = {}
+        
+        for component, param_name in component_param_map.items():
+            # For components with standard interface parameters
+            if component in ["sarcasm_detection", "idiom_detection", "contradiction_detection"]:
+                kwargs = {
+                    param_name: False  
+                }
+                without_component = self.predict(text, **kwargs)
+            
+            # For components requiring special handling
+            elif component == "contrast_handling":
+                # Create a copy of the instance with contrast handling disabled
+                temp_instance = copy.deepcopy(self)
+                temp_instance.use_contrast_handling = False
+                without_component = temp_instance.predict(text)
+            elif component == "neutral_detection":
+                # Create a copy with neutral detection disabled
+                temp_instance = copy.deepcopy(self)
+                temp_instance._detect_neutral_sentiment = lambda x: {"sarcasm_detected": False}
+                without_component = temp_instance.predict(text)
+            elif component == "negation_handling":
+                # Create a copy with modified negation handling
+                temp_instance = copy.deepcopy(self)
+                # Store original method
+                original_method = temp_instance.handle_negations
+                # Override with a pass-through version
+                temp_instance.handle_negations = lambda x: (x, {}, {})
+                without_component = temp_instance.predict(text)
+                # Restore original method to avoid issues
+                temp_instance.handle_negations = original_method
+            else:
+                # Skip unknown components
+                continue
+            
+            # Calculate impact
+            without_correct = without_component["sentiment"] == expected_sentiment
+            
+            # Determine impact: result changes when component is disabled
+            sentiment_changed = baseline["sentiment"] != without_component["sentiment"]
+            confidence_diff = baseline["confidence"] - without_component["confidence"]
+            
+            impact = {
+                "component": component,
+                "baseline_sentiment": baseline["sentiment"],
+                "without_component_sentiment": without_component["sentiment"],
+                "sentiment_changed": sentiment_changed,
+                "baseline_confidence": baseline["confidence"],
+                "without_component_confidence": without_component["confidence"],
+                "confidence_difference": confidence_diff,
+                "baseline_correct": baseline_correct,
+                "without_component_correct": without_correct,
+                "improved_accuracy": baseline_correct and not without_correct,
+                "reduced_accuracy": not baseline_correct and without_correct,
+                "no_accuracy_impact": baseline_correct == without_correct
+            }
+            
+            impact_results[component] = impact
+        
+        return {
+            "input_text": text,
+            "expected_sentiment": expected_sentiment,
+            "baseline_prediction": baseline,
+            "component_impact": impact_results
+        }
+    
+    def ab_test_component(
+        self, 
+        component_a: Tuple[str, Callable], 
+        component_b: Tuple[str, Callable], 
+        test_cases: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """
+        Run A/B testing between two alternative implementations of the same component.
+        
+        Args:
+            component_a: Tuple of (name, function) for first implementation
+            component_b: Tuple of (name, function) for second implementation
+            test_cases: List of test cases with text and expected output
+            
+        Returns:
+            Dictionary with comparison results
+        """
+        a_name, a_func = component_a
+        b_name, b_func = component_b
+        
+        a_results = []
+        b_results = []
+        
+        # Process each test case with both implementations
+        for test_case in test_cases:
+            text = test_case["text"]
+            expected = test_case.get("expected_output", None)
+            
+            # Test with implementation A
+            start_time = time.time()
+            try:
+                a_output = a_func(text)
+                a_duration = (time.time() - start_time) * 1000
+                a_error = None
+                if expected is not None:
+                    a_success = a_output == expected
+                else:
+                    a_success = None
+            except Exception as e:
+                a_output = None
+                a_duration = (time.time() - start_time) * 1000
+                a_error = str(e)
+                a_success = False
+            
+            # Test with implementation B
+            start_time = time.time()
+            try:
+                b_output = b_func(text)
+                b_duration = (time.time() - start_time) * 1000
+                b_error = None
+                if expected is not None:
+                    b_success = b_output == expected
+                else:
+                    b_success = None
+            except Exception as e:
+                b_output = None
+                b_duration = (time.time() - start_time) * 1000
+                b_error = str(e)
+                b_success = False
+            
+            # Record results
+            a_results.append({
+                "input": text,
+                "output": a_output,
+                "expected": expected,
+                "success": a_success,
+                "duration_ms": a_duration,
+                "error": a_error
+            })
+            
+            b_results.append({
+                "input": text,
+                "output": b_output,
+                "expected": expected,
+                "success": b_success,
+                "duration_ms": b_duration,
+                "error": b_error
+            })
+        
+        # Calculate summary metrics
+        a_success_count = sum(1 for r in a_results if r["success"] is True)
+        b_success_count = sum(1 for r in b_results if r["success"] is True)
+        
+        a_success_rate = a_success_count / len(a_results) if a_results else 0
+        b_success_rate = b_success_count / len(b_results) if b_results else 0
+        
+        a_avg_duration = sum(r["duration_ms"] for r in a_results) / len(a_results) if a_results else 0
+        b_avg_duration = sum(r["duration_ms"] for r in b_results) / len(b_results) if b_results else 0
+        
+        return {
+            "component_a": {
+                "name": a_name,
+                "success_rate": a_success_rate,
+                "success_count": a_success_count,
+                "avg_duration_ms": a_avg_duration,
+                "detailed_results": a_results
+            },
+            "component_b": {
+                "name": b_name,
+                "success_rate": b_success_rate,
+                "success_count": b_success_count,
+                "avg_duration_ms": b_avg_duration,
+                "detailed_results": b_results
+            },
+            "comparison": {
+                "success_diff": a_success_rate - b_success_rate,
+                "speed_diff_ms": a_avg_duration - b_avg_duration,
+                "a_better_success": a_success_rate > b_success_rate,
+                "b_better_success": b_success_rate > a_success_rate,
+                "a_faster": a_avg_duration < b_avg_duration,
+                "b_faster": b_avg_duration < a_avg_duration
+            }
+        }
 
 class ErrorAnalyzer:
     """
@@ -610,19 +937,397 @@ class ErrorAnalyzer:
             json.dump(analysis, f, indent=2)
         logger.info(f"Error analysis saved to {output_path}")
 
+# Add ComponentTester class to run the component tests
+
+class ComponentTester:
+    """Runs tests on individual sentiment analysis pipeline components"""
+    
+    def __init__(self):
+        """Initialize component tester"""
+        self.model = DiagnosticEnsemble()
+        self.results = {}
+    
+    def test_negation_handling(self, test_cases: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        """
+        Test the negation handling component in isolation.
+        
+        Args:
+            test_cases: Optional list of test cases, otherwise uses default cases
+            
+        Returns:
+            Dictionary with test results
+        """
+        if test_cases is None:
+            test_cases = [
+                {
+                    "text": "This isn't bad at all.",
+                    "expected_output": "this is n't bad_NEG at_NEG all_NEG"  # First part of the tuple
+                },
+                {
+                    "text": "I don't hate it.",
+                    "expected_output": "i do n't hate_NEG it_NEG"  # Special phrase might change this
+                },
+                {
+                    "text": "The product isn't exactly what I wouldn't recommend.",
+                    "expected_output": "the product is n't exactly_NEG what_NEG i_NEG would_NEG n't_NEG recommend_NEG"
+                },
+                {
+                    "text": "I never said it was terrible.",
+                    "expected_output": "i never said_NEG it_NEG was_NEG terrible_NEG"
+                },
+                {
+                    "text": "This is good.",
+                    "expected_output": "this is good"
+                }
+            ]
+        
+        results = []
+        for test_case in test_cases:
+            text = test_case["text"]
+            expected = test_case["expected_output"]
+            
+            # Test component in isolation
+            result = self.model.test_component("handle_negations", text, expected)
+            
+            # Negation handling returns a tuple, so we need to compare with first element
+            if "output" in result and result["output"] and isinstance(result["output"], tuple):
+                actual_output = result["output"][0]
+                # Remove periods for comparison as they might be handled differently
+                cleaned_actual = actual_output.replace('.', '').strip()
+                cleaned_expected = expected.replace('.', '').strip()
+                
+                # Update success status
+                result["success"] = cleaned_actual == cleaned_expected
+            
+            results.append(result)
+        
+        # Calculate success rate
+        success_count = sum(1 for r in results if r.get("success", False))
+        success_rate = success_count / len(results) if results else 0
+        
+        return {
+            "component": "negation_handling",
+            "success_rate": success_rate,
+            "success_count": f"{success_count}/{len(results)}",
+            "detailed_results": results
+        }
+    
+    def test_contrast_handling(self, test_cases: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        """
+        Test the contrast marker handling component in isolation.
+        
+        Args:
+            test_cases: Optional list of test cases, otherwise uses default cases
+            
+        Returns:
+            Dictionary with test results
+        """
+        if test_cases is None:
+            test_cases = [
+                {
+                    "text": "The service was terrible but the food was amazing.",
+                    "expected_output": {
+                        "has_contrast": True,
+                        "contrast_marker": "but"
+                    }
+                },
+                {
+                    "text": "Despite the high price, I liked the product.",
+                    "expected_output": {
+                        "has_contrast": True,
+                        "contrast_marker": "despite"
+                    }
+                },
+                {
+                    "text": "The graphics were good, however the story was weak.",
+                    "expected_output": {
+                        "has_contrast": True,
+                        "contrast_marker": "however"
+                    }
+                },
+                {
+                    "text": "I loved this film and would recommend it.",
+                    "expected_output": {
+                        "has_contrast": False
+                    }
+                }
+            ]
+        
+        results = []
+        for test_case in test_cases:
+            text = test_case["text"]
+            expected = test_case["expected_output"]
+            
+            # Test component in isolation
+            result = self.model.test_component("process_contrast_markers", text, expected)
+            results.append(result)
+        
+        # Calculate success rate
+        success_count = sum(1 for r in results if r.get("success", False))
+        success_rate = success_count / len(results) if results else 0
+        
+        return {
+            "component": "contrast_handling",
+            "success_rate": success_rate,
+            "success_count": f"{success_count}/{len(results)}",
+            "detailed_results": results
+        }
+    
+    def test_sarcasm_detection(self, test_cases: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        """
+        Test the sarcasm detection component in isolation.
+        
+        Args:
+            test_cases: Optional list of test cases, otherwise uses default cases
+            
+        Returns:
+            Dictionary with test results
+        """
+        if test_cases is None:
+            test_cases = [
+                {
+                    "text": "Wow, they really outdid themselves with how forgettable this was.",
+                    "expected_output": {
+                        "sarcasm_detected": True,
+                        "type": "contrasting_praise",
+                        "confidence": 85.0
+                    }
+                },
+                {
+                    "text": "Sure, it's a masterpiece... if your standards are below ground level.",
+                    "expected_output": {
+                        "sarcasm_detected": True,
+                        "type": "conditional_praise",
+                        "confidence": 85.0
+                    }
+                },
+                {
+                    "text": "The best part of this movie was when the credits rolled.",
+                    "expected_output": {
+                        "sarcasm_detected": True,
+                        "type": "credits_rolled",
+                        "confidence": 85.0
+                    }
+                },
+                {
+                    "text": "I really enjoyed this movie, it was entertaining.",
+                    "expected_output": {
+                        "sarcasm_detected": False
+                    }
+                }
+            ]
+        
+        results = []
+        for test_case in test_cases:
+            text = test_case["text"]
+            expected = test_case["expected_output"]
+            
+            # Test component in isolation
+            result = self.model.test_component("detect_sarcasm", text, expected)
+            
+            # For sarcasm detection, we need to check if the essential fields match
+            # since confidence might be slightly different
+            if "error" not in result or not result["error"]:
+                output = result["output"]
+                expected_output = result["expected"]
+                
+                # Check for key sarcasm detection properties
+                if isinstance(output, dict) and isinstance(expected_output, dict):
+                    detected_match = output.get("sarcasm_detected") == expected_output.get("sarcasm_detected")
+                    type_match = True
+                    
+                    # Only check type if sarcasm was detected
+                    if output.get("sarcasm_detected") and expected_output.get("sarcasm_detected"):
+                        type_match = output.get("type") == expected_output.get("type")
+                    
+                    result["success"] = detected_match and type_match
+            
+            results.append(result)
+        
+        # Calculate success rate
+        success_count = sum(1 for r in results if r.get("success", False))
+        success_rate = success_count / len(results) if results else 0
+        
+        return {
+            "component": "sarcasm_detection",
+            "success_rate": success_rate,
+            "success_count": f"{success_count}/{len(results)}",
+            "detailed_results": results
+        }
+    
+    def measure_component_contributions(self, test_cases: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Measure each component's contribution to overall accuracy.
+        
+        Args:
+            test_cases: List of test cases with text and expected sentiment
+            
+        Returns:
+            Dictionary with contribution measurements
+        """
+        logger.info("Measuring component contributions will be limited to sarcasm, idiom, and contradiction detection.")
+        
+        # Focus on components with clear API parameters
+        components_to_test = [
+            "sarcasm_detection",
+            "idiom_detection", 
+            "contradiction_detection"
+        ]
+        
+        component_impacts = {}
+        for component in components_to_test:
+            component_impacts[component] = {
+                "improved_accuracy_count": 0,
+                "reduced_accuracy_count": 0,
+                "no_impact_count": 0,
+                "sentiment_changed_count": 0,
+                "total_confidence_impact": 0,
+                "examples": []
+            }
+        
+        # Test a limited set of examples to prevent overrunning
+        test_subset = test_cases[:5] if len(test_cases) > 5 else test_cases
+        
+        for i, test_case in enumerate(test_subset):
+            text = test_case["text"]
+            expected = test_case["expected_sentiment"]
+            
+            logger.info(f"Measuring component impact for test case {i+1}: {text}")
+            
+            # Get baseline prediction with all components
+            baseline = self.model.predict(text)
+            baseline_correct = baseline["sentiment"] == expected
+            
+            # Test each supported component by toggling it off
+            for component in components_to_test:
+                param_name = f"use_{component}"
+                
+                try:
+                    # Run prediction without this component
+                    kwargs = {param_name: False}
+                    without_component = self.model.predict(text, **kwargs)
+                    
+                    # Calculate impact metrics
+                    without_correct = without_component["sentiment"] == expected
+                    sentiment_changed = baseline["sentiment"] != without_component["sentiment"]
+                    confidence_diff = baseline["confidence"] - without_component["confidence"]
+                    
+                    # Update stats
+                    if baseline_correct and not without_correct:
+                        component_impacts[component]["improved_accuracy_count"] += 1
+                    
+                    if not baseline_correct and without_correct:
+                        component_impacts[component]["reduced_accuracy_count"] += 1
+                    
+                    if baseline_correct == without_correct:
+                        component_impacts[component]["no_impact_count"] += 1
+                    
+                    if sentiment_changed:
+                        component_impacts[component]["sentiment_changed_count"] += 1
+                    
+                    component_impacts[component]["total_confidence_impact"] += abs(confidence_diff)
+                    
+                    # Store example if component had an impact
+                    if sentiment_changed or abs(confidence_diff) > 5:
+                        component_impacts[component]["examples"].append({
+                            "text": text,
+                            "expected": expected,
+                            "baseline": baseline["sentiment"],
+                            "without_component": without_component["sentiment"],
+                            "confidence_difference": confidence_diff
+                        })
+                except Exception as e:
+                    logger.error(f"Error testing {component} impact: {str(e)}")
+        
+        # Calculate averages and impact scores
+        total_cases = len(test_subset)
+        for component, data in component_impacts.items():
+            data["impact_score"] = (
+                (data["improved_accuracy_count"] * 2) + 
+                data["sentiment_changed_count"] + 
+                (data["total_confidence_impact"] / max(1, total_cases) / 10)
+            ) / max(1, total_cases)
+            
+            data["avg_confidence_impact"] = data["total_confidence_impact"] / max(1, total_cases)
+            data["improved_accuracy_pct"] = (data["improved_accuracy_count"] / max(1, total_cases)) * 100
+            data["reduced_accuracy_pct"] = (data["reduced_accuracy_count"] / max(1, total_cases)) * 100
+            data["sentiment_changed_pct"] = (data["sentiment_changed_count"] / max(1, total_cases)) * 100
+        
+        # Sort components by impact score
+        sorted_components = sorted(
+            component_impacts.items(),
+            key=lambda x: x[1]["impact_score"],
+            reverse=True
+        )
+        
+        return {
+            "components": dict(sorted_components),
+            "total_cases": total_cases
+        }
+    
+    def run_complete_component_tests(self, test_cases: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Run a complete set of component tests and impact measurements.
+        
+        Args:
+            test_cases: List of test cases with text and expected sentiment
+            
+        Returns:
+            Dictionary with all test results
+        """
+        logger.info("Running negation handling tests...")
+        negation_results = self.test_negation_handling()
+        
+        logger.info("Running contrast handling tests...")
+        contrast_results = self.test_contrast_handling()
+        
+        logger.info("Running sarcasm detection tests...")
+        sarcasm_results = self.test_sarcasm_detection()
+        
+        logger.info("Measuring component contributions...")
+        contribution_results = self.measure_component_contributions(test_cases)
+        
+        # Combine results
+        all_results = {
+            "component_tests": {
+                "negation_handling": negation_results,
+                "contrast_handling": contrast_results,
+                "sarcasm_detection": sarcasm_results
+            },
+            "component_contributions": contribution_results
+        }
+        
+        # Log summary
+        logger.info("\n===== COMPONENT TEST SUMMARY =====")
+        logger.info(f"Negation handling: {negation_results['success_rate']*100:.1f}% success ({negation_results['success_count']})")
+        logger.info(f"Contrast handling: {contrast_results['success_rate']*100:.1f}% success ({contrast_results['success_count']})")
+        logger.info(f"Sarcasm detection: {sarcasm_results['success_rate']*100:.1f}% success ({sarcasm_results['success_count']})")
+        
+        logger.info("\n--- Component Contributions to Accuracy ---")
+        for component, data in contribution_results["components"].items():
+            logger.info(f"{component}: impact score {data['impact_score']:.2f}")
+            logger.info(f"  - Improved accuracy in {data['improved_accuracy_pct']:.1f}% of cases")
+            logger.info(f"  - Changed sentiment in {data['sentiment_changed_pct']:.1f}% of cases")
+            logger.info(f"  - Average confidence impact: {data['avg_confidence_impact']:.2f}%")
+        
+        return all_results
+
+# Update test_sentiment_analysis to include component testing option
 def test_sentiment_analysis(categories: Optional[List[str]] = None,
                            models: Optional[List[str]] = None,
                            enable_debug: bool = False,
-                           compare_with: Optional[str] = None) -> Dict[str, Any]:
+                           compare_with: Optional[str] = None,
+                           component_testing: bool = False) -> Dict[str, Any]:
     """
     Test the sentiment analysis model on a set of challenging test cases.
-    Enhanced with diagnostics and performance analysis.
+    Enhanced with diagnostics, performance analysis, and component testing.
     
     Args:
         categories: Optional list of test categories to run (e.g., ["negation", "sarcasm"])
         models: Optional list of models to test (default: all available models)
         enable_debug: Whether to enable detailed debugging output
         compare_with: Timestamp of previous results to compare with, or "latest"
+        component_testing: Whether to run component isolation tests
         
     Returns:
         Dictionary with test results
@@ -1109,6 +1814,22 @@ def test_sentiment_analysis(categories: Optional[List[str]] = None,
                 }
             }
         
+        # Add component testing if requested
+        if component_testing:
+            logger.info("\n===== RUNNING COMPONENT ISOLATION TESTS =====")
+            component_tester = ComponentTester()
+            component_results = component_tester.run_complete_component_tests(test_cases)
+            
+            # Save component test results
+            component_file = f"test_results/component_tests_{timestamp}.json"
+            with open(component_file, "w") as f:
+                json.dump(component_results, f, indent=2)
+            logger.info(f"Component test results saved to {component_file}")
+            
+            # Add component results to main results
+            for model_name in results:
+                results[model_name]["component_tests"] = component_results
+        
         return results
     
     except Exception as e:
@@ -1213,6 +1934,11 @@ def parse_args():
     parser.add_argument('--skip-analysis', action='store_true', help='Skip error analysis step')
     parser.add_argument('--analysis-only', action='store_true', help='Only run error analysis on latest results')
     
+    # Component testing options
+    parser.add_argument('--component-tests', action='store_true', help='Run component isolation tests')
+    parser.add_argument('--component-only', action='store_true', help='Only run component isolation tests')
+    parser.add_argument('--measure-impact', action='store_true', help='Measure component contribution to accuracy')
+    
     return parser.parse_args()
 
 if __name__ == "__main__":
@@ -1228,14 +1954,79 @@ if __name__ == "__main__":
     categories = args.categories.split(',') if args.categories else None
     models = args.models.split(',') if args.models else None
     
-    if args.analysis_only:
+    if args.component_only:
+        # Only run component isolation tests
+        try:
+            component_tester = ComponentTester()
+            
+            # Create results directory if it doesn't exist
+            if not os.path.exists('test_results'):
+                os.makedirs('test_results')
+            
+            # Load test cases for impact measurement
+            try:
+                # Find the test cases from the most recent test
+                results_files = sorted([f for f in os.listdir("test_results") 
+                                        if f.startswith("sentiment_test_results_") and f.endswith(".json")],
+                                      key=lambda x: x.split("_")[-1].split(".")[0],
+                                      reverse=True)
+                
+                if results_files:
+                    latest_file = os.path.join("test_results", results_files[0])
+                    with open(latest_file, 'r') as f:
+                        results = json.load(f)
+                    
+                    # Extract test cases from first model
+                    model_name = next(iter(results))
+                    test_results = results[model_name]["test_results"]
+                    
+                    test_cases = [
+                        {
+                            "text": r["text"],
+                            "expected_sentiment": r["expected"]
+                        }
+                        for r in test_results
+                    ]
+                else:
+                    # If no previous results, use hardcoded test cases
+                    logger.warning("No previous test results found. Using default test cases.")
+                    test_cases = [
+                        {"text": "This movie isn't bad at all.", "expected_sentiment": "Positive"},
+                        {"text": "Despite the beautiful visuals, the plot was confusing.", "expected_sentiment": "Negative"},
+                        {"text": "The best part of this movie was when the credits rolled.", "expected_sentiment": "Negative"}
+                    ]
+            except Exception as e:
+                logger.error(f"Error loading test cases: {e}")
+                # Fall back to default test cases
+                test_cases = [
+                    {"text": "This movie isn't bad at all.", "expected_sentiment": "Positive"},
+                    {"text": "Despite the beautiful visuals, the plot was confusing.", "expected_sentiment": "Negative"},
+                    {"text": "The best part of this movie was when the credits rolled.", "expected_sentiment": "Negative"}
+                ]
+            
+            # Run component tests
+            component_results = component_tester.run_complete_component_tests(test_cases)
+            
+            # Save results
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            component_file = f"test_results/component_tests_{timestamp}.json"
+            with open(component_file, "w") as f:
+                json.dump(component_results, f, indent=2)
+            logger.info(f"Component test results saved to {component_file}")
+            
+            sys.exit(0)
+        except Exception as e:
+            logger.error(f"Error during component testing: {str(e)}")
+            logger.error(traceback.format_exc())
+            sys.exit(1)
+    elif args.analysis_only:
         # Only run error analysis on latest results
         try:
             # Find latest results file
             results_files = sorted([f for f in os.listdir("test_results") 
                                 if f.startswith("sentiment_test_results_") and f.endswith(".json")],
-                                key=lambda x: x.split("_")[-1].split(".")[0],
-                                reverse=True)
+                              key=lambda x: x.split("_")[-1].split(".")[0],
+                              reverse=True)
             
             if not results_files:
                 logger.error("No test results found for analysis")
@@ -1276,5 +2067,6 @@ if __name__ == "__main__":
             categories=categories,
             models=models,
             enable_debug=args.debug,
-            compare_with=args.compare
+            compare_with=args.compare,
+            component_testing=args.component_tests
         ) 
