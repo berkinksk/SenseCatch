@@ -35,6 +35,8 @@ class ColoredFormatter(logging.Formatter):
         # Replace Unicode arrow with ASCII equivalent in the log message
         if hasattr(record, 'msg') and isinstance(record.msg, str):
             record.msg = record.msg.replace('→', '->')
+            record.msg = record.msg.replace('✓', '[PASS]')
+            record.msg = record.msg.replace('✗', '[FAIL]')
         
         log_message = super().format(record)
         if not self.use_color:
