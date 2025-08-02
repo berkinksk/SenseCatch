@@ -37,6 +37,11 @@ test_results/
 models/
 nltk_data/
 
+# Ignore generated artifact and dataset folders
+artifacts/
+data/
+docs/
+
 # Project-specific files that should never be committed
 ensemble_model.py.backup
 ensemble_model.py.methods

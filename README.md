@@ -119,7 +119,7 @@ The testing framework generates comprehensive HTML reports with:
 
 ## Empirical Evaluation
 
-> **Note:** The following results are based on our internal test suite of 32 hand-crafted examples designed to evaluate specific linguistic phenomena. They do not represent performance on standard benchmarks. Comprehensive evaluation on established datasets (IMDB, SST, SemEval, etc.) is planned for future work.
+> **Note:** The following results are based on the internal test suite of 32 hand-crafted examples designed to evaluate specific linguistic phenomena. They do not represent performance on standard benchmarks. Comprehensive evaluation on established datasets (IMDB, SST, SemEval, etc.) is planned for future work.
 
 Our recent test results from the internal diagnostic framework show:
 
@@ -148,13 +148,13 @@ This will provide more comprehensive and comparable performance metrics.
 
 ## Project Structure
 
-- `ensemble_model.py`: Core sentiment analysis engine with `SentimentEnsemble` class
-- `train_models.py`: Model training scripts
-- `test_improvements.py`: Testing framework with diagnostics (`DiagnosticEnsemble` class)
-- `test_visualizer.py`: Visualization generator
-- `run_tests.py`: Command-line test runner
+- `src/sensecatch/ensemble_model.py`: Core sentiment analysis engine with `SentimentEnsemble` class
+- `src/training/train_models.py`: Model training scripts
+- `tests/test_improvements.py`: Testing framework with diagnostics (`DiagnosticEnsemble` class)
+- `tests/test_visualizer.py`: Visualization generator
+- `tests/run_tests.py`: Command-line test runner
 - `data/`: Training and validation datasets
-- `test_results/`: Test outputs and reports
+- `artifacts/test_results/`: Test outputs and reports
 
 ## Contributing
 
