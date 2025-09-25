@@ -9,8 +9,11 @@ from flask_cors import CORS
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
-# Create the Flask app first, in case there are errors with other imports
-app = Flask(__name__)
+# Create the Flask app with explicit template & static folders (project root)
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+TEMPLATES_PATH = os.path.join(PROJECT_ROOT, 'templates')
+STATIC_PATH = os.path.join(PROJECT_ROOT, 'static')
+app = Flask(__name__, template_folder=TEMPLATES_PATH, static_folder=STATIC_PATH, static_url_path='')
 
 # Enable CORS for frontend hosted on a different domain (e.g., Vercel)
 try:
