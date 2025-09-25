@@ -3,6 +3,7 @@ import logging
 from flask import Flask, request, jsonify, render_template
 import re
 import traceback
+from flask_cors import CORS
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -10,6 +11,18 @@ logger = logging.getLogger(__name__)
 
 # Create the Flask app first, in case there are errors with other imports
 app = Flask(__name__)
+
+# Enable CORS for frontend hosted on a different domain (e.g., Vercel)
+try:
+    allowed_origins = os.environ.get('ALLOWED_ORIGINS')
+    if allowed_origins:
+        origins_list = [o.strip() for o in allowed_origins.split(',') if o.strip()]
+        CORS(app, resources={r"/analyze": {"origins": origins_list}})
+    else:
+        # Default: allow all origins for the /analyze endpoint
+        CORS(app, resources={r"/analyze": {"origins": "*"}})
+except Exception as e:
+    logger.warning(f"CORS not enabled: {e}")
 
 # Set NLTK data path explicitly
 nltk_data_path = os.path.join(os.getcwd(), 'nltk_data')
@@ -45,7 +58,7 @@ def simple_tokenize(text):
 # Import ensemble model with error handling
 ensemble = None
 try:
-    from ensemble_model import SentimentEnsemble
+    from src.sensecatch.ensemble_model import SentimentEnsemble
     logger.info("Initializing ensemble model...")
     ensemble = SentimentEnsemble()
     logger.info("Ensemble model initialized successfully")

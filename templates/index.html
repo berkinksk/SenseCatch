@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SenseCatch.ai - Sentiment Analysis</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='main.css') }}">
+    <link rel="stylesheet" href="/main.css">
     <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;700&display=swap" rel="stylesheet">
     <meta name="description" content="Analyze sentiment in text with multiple machine learning models">
 </head>
@@ -60,6 +60,10 @@
         </footer>
     </div>
 
-    <script src="{{ url_for('static', filename='main.js') }}"></script>
+    <script>
+        // Optionally set from HTML when hosted on Vercel
+        // window.SENSECATCH_API_BASE = 'https://YOUR-API-DOMAIN/analyze';
+    </script>
+    <script src="/main.js"></script>
 </body>
 </html>

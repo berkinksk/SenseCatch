@@ -1,4 +1,7 @@
 document.addEventListener('DOMContentLoaded', () => {
+    // Configure API endpoint: prefer window.SENSECATCH_API_BASE if set
+    const DEFAULT_API = '/analyze';
+    const API_BASE = (typeof window !== 'undefined' && window.SENSECATCH_API_BASE) ? window.SENSECATCH_API_BASE : DEFAULT_API;
     const textInput = document.getElementById('text-input');
     const modelSelector = document.getElementById('model-selector');
     const analyzeBtn = document.getElementById('analyze-btn');
@@ -25,7 +28,7 @@ document.addEventListener('DOMContentLoaded', () => {
         
         try {
             // Send request to server
-            const response = await fetch('/analyze', {
+            const response = await fetch(API_BASE, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -185,4 +188,18 @@ document.addEventListener('DOMContentLoaded', () => {
             updateHistoryDisplay();
         }
     });
+
+    // Optional: background warm-up ping to reduce free-tier cold start delay
+    try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
+        fetch(API_BASE, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: 'warmup', model: 'naive_bayes' }),
+            signal: controller.signal
+        }).finally(() => clearTimeout(timeoutId));
+    } catch (_) {
+        // ignore warm-up failures
+    }
 });
