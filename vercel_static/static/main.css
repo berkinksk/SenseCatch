@@ -104,7 +104,7 @@ textarea:focus {
     display: flex;
     margin-top: 15px;
     gap: 15px;
-    align-items: center;
+    align-items: flex-end;
 }
 
 .model-selection {
@@ -122,6 +122,12 @@ select, button {
     padding: 12px 15px;
     border-radius: 6px;
     font-size: 1rem;
+}
+
+/* Ensure select and button align perfectly on the same row */
+.controls select,
+.controls button {
+    height: 44px;
 }
 
 select {
