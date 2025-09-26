@@ -1591,26 +1591,31 @@ class SentimentEnsemble:
             # Process text
             processed_text = self._preprocess_text(text)
             
-            # Extract features using the appropriate vectorizer
-            features = vectorizer.transform([processed_text])
+            # Extract features using the appropriate vectorizer(s)
+            features_text = vectorizer.transform([processed_text])
+            dict_vec = self.dict_vectorizers.get(model_name)
+            if dict_vec is not None:
+                try:
+                    if self.lexicon is not None:
+                        dict_feats = self.lexicon.extract_all_features(processed_text)
+                    else:
+                        dict_feats = {}
+                    X_dict = dict_vec.transform([dict_feats])
+                    features = hstack([features_text, X_dict])
+                except Exception:
+                    # If anything goes wrong, fall back to text-only features
+                    features = features_text
+            else:
+                features = features_text
             
             # Get the expected feature dimensions for this model
-            expected_dim = model.coef_.shape[1] if hasattr(model, 'coef_') else None
+            expected_dim = getattr(model, 'n_features_in_', None)
+            if expected_dim is None and hasattr(model, 'coef_'):
+                expected_dim = model.coef_.shape[1]
             
             if expected_dim and features.shape[1] != expected_dim:
                 logger.warning(f"Feature dimension mismatch: model expects {expected_dim}, but got {features.shape[1]}. Adjusting.")
-                # Ensure we can adjust features using dict_vectorizer if present
-                dict_vec = self.dict_vectorizers.get(model_name)
-                if dict_vec is not None:
-                    try:
-                        # Build empty dict features to match dict vectorizer columns
-                        empty_dict = [{}]
-                        X_dict = dict_vec.transform(empty_dict)
-                        # Combine text features with empty dict features
-                        features = hstack([features, X_dict])
-                    except Exception as _:
-                        pass
-                # After combination, pad or trim as needed
+                # After combination above, pad or trim as needed
                 if expected_dim != features.shape[1]:
                     diff = expected_dim - features.shape[1]
                     if diff > 0:
