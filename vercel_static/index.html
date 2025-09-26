@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SenseCatch.ai - Sentiment Analysis</title>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/main.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">
+                <h1>SenseCatch<span>.ai</span></h1>
+                <p>Sentiment Analysis Platform</p>
+            </div>
+        </header>
+
+        <main>
+            <div class="analysis-panel">
+                <div class="input-section">
+                    <h2>Analyze Text Sentiment</h2>
+                    <p>Enter any text to analyze its emotional tone using machine learning.</p>
+                    <textarea id="text-input" placeholder="Type or paste text here to analyze sentiment..."></textarea>
+                    <div class="controls">
+                        <div class="model-selection">
+                            <label for="model-selector">Choose Model:</label>
+                            <select id="model-selector">
+                                <option value="naive_bayes">Naive Bayes</option>
+                                <option value="logistic_regression">Logistic Regression</option>
+                            </select>
+                        </div>
+                        <button id="analyze-btn">Analyze Sentiment</button>
+                    </div>
+                </div>
+                <div class="result-section">
+                    <h2>Analysis Results</h2>
+                    <div id="result-display">
+                        <p class="prompt">Enter text and click "Analyze Sentiment" to see results.</p>
+                    </div>
+                </div>
+            </div>
+            <div class="history-panel">
+                <div class="history-header">
+                    <h2>Analysis History</h2>
+                    <button id="clear-history-btn" class="secondary-btn">Clear History</button>
+                </div>
+                <div id="history-list">
+                    <p class="no-history">Previous analyses will appear here.</p>
+                </div>
+            </div>
+        </main>
+
+        <footer>
+            <p>&copy; 2025 sensecatch.ai | <a href="https://github.com/berkinksk/SenseCatch" target="_blank">View on GitHub</a></p>
+            <p class="footer-note">Created as part of my journey to pursue a Master's in AI/ML</p>
+        </footer>
+    </div>
+
+    <script>
+        // Set the API base to your Render testing URL; update later to api.sensecatch.ai
+        window.SENSECATCH_API_BASE = 'https://sensecatch-model-improvements-branch.onrender.com/analyze';
+    </script>
+    <script src="/static/main.js"></script>
+</body>
+</html>
+
+
