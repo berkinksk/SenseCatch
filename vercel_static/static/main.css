@@ -107,6 +107,26 @@ textarea:focus {
     align-items: flex-end;
 }
 
+.input-section {
+    padding-bottom: 8px;
+}
+
+.info-banner {
+    margin: 10px 25px 0 25px;
+    padding: 12px 14px;
+    border-radius: 6px;
+    background: #fff8e1;
+    border: 1px solid #ffe0a3;
+    color: #6b4f00;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    white-space: pre-line;
+}
+.info-banner.hidden { display: none; }
+.info-close { background: transparent; border: none; font-size: 18px; color: #6b4f00; cursor: pointer; }
+
 .model-selection {
     flex-grow: 1;
 }

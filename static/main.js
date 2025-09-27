@@ -11,6 +11,44 @@ document.addEventListener('DOMContentLoaded', () => {
     // Store analysis history
     const analysisHistory = [];
     
+    // Banner helpers
+    const infoBanner = document.getElementById('inline-info');
+    const infoText = document.getElementById('info-text');
+    const infoClose = document.getElementById('info-close');
+    const FIRST_VISIT_KEY = 'sc_first_visit_shown_v1';
+    const LAST_SUCCESS_TS = 'sc_last_success_ts_v1';
+    const REWARM_SECS = 15 * 60; // 15 minutes
+
+    function showInfo(message) {
+        if (!infoBanner) return;
+        infoText.textContent = message;
+        infoBanner.classList.remove('hidden');
+    }
+    function hideInfo() {
+        if (!infoBanner) return;
+        infoBanner.classList.add('hidden');
+    }
+    if (infoClose) {
+        infoClose.addEventListener('click', hideInfo);
+    }
+
+    // Initial banner for first click per session
+    function maybeShowFirstVisitBanner() {
+        if (!sessionStorage.getItem(FIRST_VISIT_KEY)) {
+            showInfo('Waking up the machine learning models!\nFirst request may take up to ~40 seconds.');
+            sessionStorage.setItem(FIRST_VISIT_KEY, '1');
+        }
+    }
+
+    // Re-warm banner if app likely slept again (no success for 15+ mins)
+    function maybeShowRewarmBanner() {
+        const last = Number(sessionStorage.getItem(LAST_SUCCESS_TS) || '0');
+        const now = Date.now() / 1000;
+        if (!last || (now - last) > REWARM_SECS) {
+            showInfo('The ML models went to sleep due to inactivity. Waking them up now…\n(this may take up to ~40 seconds)');
+        }
+    }
+
     // Handle analyze button click
     analyzeBtn.addEventListener('click', async () => {
         const text = textInput.value.trim();
@@ -21,6 +59,10 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         
+        // Show inline info if first visit and if rewarm needed
+        maybeShowFirstVisitBanner();
+        maybeShowRewarmBanner();
+
         // Show loading state
         analyzeBtn.disabled = true;
         analyzeBtn.textContent = 'Analyzing...';
@@ -41,6 +83,9 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             
             const result = await response.json();
+            // Success - record timestamp and hide banner
+            sessionStorage.setItem(LAST_SUCCESS_TS, String(Math.floor(Date.now()/1000)));
+            hideInfo();
             
             // Display result
             displayResult(result);
