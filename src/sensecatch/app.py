@@ -91,6 +91,14 @@ def clean_text(text):
 def home():
     return render_template('index.html')
 
+# Lightweight health check endpoint for Render
+@app.route('/healthz')
+def healthz():
+    return jsonify({
+        'status': 'ok',
+        'model_initialized': ensemble is not None
+    }), 200
+
 @app.route('/analyze', methods=['POST'])
 def analyze():
     try:
