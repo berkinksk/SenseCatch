@@ -4,9 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SenseCatch.ai - Sentiment Analysis</title>
-    <link rel="stylesheet" href="/main.css">
     <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;700&display=swap" rel="stylesheet">
-    <meta name="description" content="Analyze sentiment in text with multiple machine learning models">
+    <link rel="stylesheet" href="/static/main.css">
 </head>
 <body>
     <div class="container">
@@ -16,7 +15,7 @@
                 <p>Sentiment Analysis Platform</p>
             </div>
         </header>
-        
+
         <main>
             <div class="analysis-panel">
                 <div class="input-section">
@@ -34,7 +33,11 @@
                         <button id="analyze-btn">Analyze Sentiment</button>
                     </div>
                 </div>
-                
+                <!-- Inline info popup area (appears below controls, above results) -->
+                <div id="inline-info" class="info-banner hidden" role="status" aria-live="polite">
+                    <div id="info-text"></div>
+                    <button id="info-close" class="info-close" aria-label="Close">×</button>
+                </div>
                 <div class="result-section">
                     <h2>Analysis Results</h2>
                     <div id="result-display">
@@ -42,7 +45,6 @@
                     </div>
                 </div>
             </div>
-            
             <div class="history-panel">
                 <div class="history-header">
                     <h2>Analysis History</h2>
@@ -53,7 +55,7 @@
                 </div>
             </div>
         </main>
-        
+
         <footer>
             <p>&copy; 2025 sensecatch.ai | <a href="https://github.com/berkinksk/SenseCatch" target="_blank">View on GitHub</a></p>
             <p class="footer-note">Created as part of my journey to pursue a Master's in AI/ML</p>
@@ -61,9 +63,11 @@
     </div>
 
     <script>
-        // Optionally set from HTML when hosted on Vercel
-        // window.SENSECATCH_API_BASE = 'https://YOUR-API-DOMAIN/analyze';
+        // Set the API base to your Render testing URL; update later to api.sensecatch.ai
+        window.SENSECATCH_API_BASE = 'https://sensecatch-model-improvements-branch.onrender.com/analyze';
     </script>
-    <script src="/main.js"></script>
+    <script src="/static/main.js"></script>
 </body>
 </html>
+
+
