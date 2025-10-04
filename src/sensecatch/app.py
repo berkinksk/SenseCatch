@@ -3,7 +3,7 @@ import logging
 from flask import Flask, request, jsonify, render_template
 import re
 import traceback
-from flask_cors import CORS
+from flask_cors import CORS, cross_origin
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -18,12 +18,21 @@ app = Flask(__name__, template_folder=TEMPLATES_PATH, static_folder=STATIC_PATH,
 # Enable CORS for frontend hosted on a different domain (e.g., Vercel)
 try:
     allowed_origins = os.environ.get('ALLOWED_ORIGINS')
+    cors_opts = {
+        "methods": ["POST", "OPTIONS"],
+        "allow_headers": ["Content-Type"],
+        "max_age": 600,
+    }
+    # Keep module-level origins for decorators
+    CORS_ORIGINS = "*"
     if allowed_origins:
         origins_list = [o.strip() for o in allowed_origins.split(',') if o.strip()]
-        CORS(app, resources={r"/analyze": {"origins": origins_list}})
+        cors_opts["origins"] = origins_list
+        CORS_ORIGINS = origins_list
+        CORS(app, resources={r"/analyze": cors_opts})
     else:
-        # Default: allow all origins for the /analyze endpoint
-        CORS(app, resources={r"/analyze": {"origins": "*"}})
+        cors_opts["origins"] = "*"
+        CORS(app, resources={r"/analyze": cors_opts})
 except Exception as e:
     logger.warning(f"CORS not enabled: {e}")
 
@@ -99,7 +108,13 @@ def healthz():
         'model_initialized': ensemble is not None
     }), 200
 
+@app.route('/analyze', methods=['OPTIONS'])
+@cross_origin(origins=lambda: globals().get('CORS_ORIGINS', '*'), methods=['OPTIONS', 'POST'], headers=['Content-Type'], max_age=600)
+def analyze_preflight():
+    return ('', 204)
+
 @app.route('/analyze', methods=['POST'])
+@cross_origin(origins=lambda: globals().get('CORS_ORIGINS', '*'), methods=['POST'], headers=['Content-Type'], max_age=600)
 def analyze():
     try:
         # Get data from request
