@@ -18,12 +18,19 @@ app = Flask(__name__, template_folder=TEMPLATES_PATH, static_folder=STATIC_PATH,
 # Enable CORS for frontend hosted on a different domain (e.g., Vercel)
 try:
     allowed_origins = os.environ.get('ALLOWED_ORIGINS')
+    cors_opts = {
+        "methods": ["POST", "OPTIONS"],
+        "allow_headers": ["Content-Type"],
+        "max_age": 600,
+    }
     if allowed_origins:
         origins_list = [o.strip() for o in allowed_origins.split(',') if o.strip()]
-        CORS(app, resources={r"/analyze": {"origins": origins_list}})
+        cors_opts["origins"] = origins_list
+        CORS(app, resources={r"/analyze": cors_opts})
     else:
+        cors_opts["origins"] = "*"
         # Default: allow all origins for the /analyze endpoint
-        CORS(app, resources={r"/analyze": {"origins": "*"}})
+        CORS(app, resources={r"/analyze": cors_opts})
 except Exception as e:
     logger.warning(f"CORS not enabled: {e}")
 
@@ -98,6 +105,10 @@ def healthz():
         'status': 'ok',
         'model_initialized': ensemble is not None
     }), 200
+
+@app.route('/analyze', methods=['OPTIONS'])
+def analyze_preflight():
+    return ('', 204)
 
 @app.route('/analyze', methods=['POST'])
 def analyze():
