@@ -3,7 +3,7 @@ import logging
 from flask import Flask, request, jsonify, render_template
 import re
 import traceback
-from flask_cors import CORS
+from flask_cors import CORS, cross_origin
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -23,14 +23,15 @@ try:
         "allow_headers": ["Content-Type"],
         "max_age": 600,
     }
+    # Keep module-level origins for decorators
+    CORS_ORIGINS = "*"
     if allowed_origins:
         origins_list = [o.strip() for o in allowed_origins.split(',') if o.strip()]
         cors_opts["origins"] = origins_list
-        CORS(app, resources={r"/analyze": cors_opts})
+        CORS_ORIGINS = origins_list
     else:
         cors_opts["origins"] = "*"
-        # Default: allow all origins for the /analyze endpoint
-        CORS(app, resources={r"/analyze": cors_opts})
+    CORS(app, resources={r"/analyze": cors_opts})
 except Exception as e:
     logger.warning(f"CORS not enabled: {e}")
 
@@ -107,10 +108,12 @@ def healthz():
     }), 200
 
 @app.route('/analyze', methods=['OPTIONS'])
+@cross_origin(origins=lambda: globals().get('CORS_ORIGINS', '*'), methods=['OPTIONS', 'POST'], headers=['Content-Type'], max_age=600)
 def analyze_preflight():
     return ('', 204)
 
 @app.route('/analyze', methods=['POST'])
+@cross_origin(origins=lambda: globals().get('CORS_ORIGINS', '*'), methods=['POST'], headers=['Content-Type'], max_age=600)
 def analyze():
     try:
         # Get data from request
