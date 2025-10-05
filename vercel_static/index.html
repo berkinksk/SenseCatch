@@ -63,8 +63,23 @@
     </div>
 
     <script>
-        // Set the API base to your Render testing URL; update later to api.sensecatch.ai
-        window.SENSECATCH_API_BASE = 'https://sensecatch-model-improvements-branch.onrender.com/analyze';
+        // Automatic API endpoint selection based on deployment environment
+        // Production domains (sensecatch.ai, www.sensecatch.ai) → production API
+        // Preview/staging domains (*.vercel.app) → testing API
+        (function() {
+            const hostname = window.location.hostname;
+            const isProduction = hostname === 'sensecatch.ai' || hostname === 'www.sensecatch.ai';
+            
+            if (isProduction) {
+                window.SENSECATCH_API_BASE = 'https://api.sensecatch.ai/analyze';
+                console.log('🚀 Production mode: Using production API at api.sensecatch.ai');
+            } else {
+                window.SENSECATCH_API_BASE = 'https://sensecatch-model-improvements-branch.onrender.com/analyze';
+                console.log('🧪 Preview/Testing mode: Using testing API at Render testing branch');
+            }
+            
+            console.log('API Base URL:', window.SENSECATCH_API_BASE);
+        })();
     </script>
     <script src="/static/main.js"></script>
 </body>
