@@ -19,10 +19,10 @@ SenseCatch is a sophisticated sentiment analysis system designed to understand a
 
 ### Prerequisites
 
-- Python 3.8+
+- Python 3.9+
 - Required Python packages (install via pip):
   ```
-  pip install numpy pandas matplotlib scikit-learn nltk vader-sentiment
+  pip install -r requirements.txt
   ```
 
 ### Installation
@@ -43,7 +43,7 @@ SenseCatch is a sophisticated sentiment analysis system designed to understand a
 #### Basic Sentiment Analysis
 
 ```python
-from ensemble_model import SentimentEnsemble
+from src.sensecatch.ensemble_model import SentimentEnsemble
 
 # Initialize the model
 model = SentimentEnsemble()
@@ -59,19 +59,19 @@ The project includes a comprehensive testing framework to evaluate model perform
 
 ```bash
 # Run all tests
-python run_tests.py
+python tests/run_tests.py
 
 # Run specific test categories
-python run_tests.py --categories negation,sarcasm
+python tests/run_tests.py --categories negation,sarcasm
 
 # Test specific models
-python run_tests.py --models logistic_regression
+python tests/run_tests.py --models logistic_regression
 
 # Generate visualizations
-python run_tests.py --visualize
+python tests/run_tests.py --visualize
 
 # Compare with previous results
-python run_tests.py --compare latest
+python tests/run_tests.py --compare latest
 ```
 
 ## Testing Framework
@@ -80,9 +80,9 @@ SenseCatch includes an advanced testing and visualization framework:
 
 ### Test Components
 
-- **test_improvements.py**: Main testing script with diagnostics
-- **test_visualizer.py**: Generates visual performance reports
-- **run_tests.py**: Command-line interface for running tests
+- **tests/test_improvements.py**: Main testing script with diagnostics
+- **tests/test_visualizer.py**: Generates visual performance reports
+- **tests/run_tests.py**: Command-line interface for running tests
 
 ### Key Testing Features
 
