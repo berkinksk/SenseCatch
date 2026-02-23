@@ -43,7 +43,5 @@ data/
 docs/
 
 # Project-specific files that should never be committed
-ensemble_model.py.backup
-ensemble_model.py.methods
 project_context_prompt.txt
-committed_model_methods.txt
+.gitattributes
