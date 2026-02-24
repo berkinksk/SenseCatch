@@ -1,181 +1,203 @@
-# SenseCatch - Advanced Sentiment Analysis
+# SenseCatch
 
-SenseCatch is a sophisticated sentiment analysis system designed to understand and analyze text sentiment with high accuracy, especially for challenging linguistic patterns like sarcasm, negation, and mixed sentiments.
+A sentiment analysis engine that combines an ensemble of ML classifiers with rule-based linguistic pattern detection to handle challenging cases like sarcasm, negation, and mixed sentiment.
 
-## Features
+**Live Demo:** [sensecatch.ai](https://sensecatch.ai)
 
-- **Ensemble Learning Architecture**: Combines multiple machine learning models (Naive Bayes, Logistic Regression) with independent pipelines and confidence calibration
-- **Advanced Text Understanding**: Handles complex language patterns including:
-  - Negation handling (e.g., "This isn't bad")
-  - Sarcasm detection using lexical incongruity patterns
-  - Contrast markers (e.g., "despite", "however", "but")
-  - Idiom recognition with semantic override capabilities
-  - Mixed sentiment analysis
-- **Rule-Based Enhancements**: Augments statistical models with explicit linguistic rules for improved accuracy on edge cases
-- **Comprehensive Testing Framework**: Rigorous validation with extensive test cases and diagnostic tools
-- **Performance Visualization**: Detailed graphical reports on model performance
+## How It Works
+
+SenseCatch goes beyond bag-of-words classification. It runs text through a multi-stage prediction pipeline where each stage can short-circuit with a high-confidence result, and only ambiguous cases reach the full ensemble inference:
+
+```
+Input Text
+  │
+  ├─ 1. Simple Case Detection ──────────────── (50+ phrase patterns, immediate return)
+  │
+  ├─ 2. Text Preprocessing
+  │     ├─ Named entity recognition (movie titles, products)
+  │     ├─ Negation scope detection (5-word context window)
+  │     └─ Contrast marker identification
+  │
+  ├─ 3. Linguistic Pattern Detection
+  │     ├─ Sarcasm detection (6 pattern categories)
+  │     ├─ Idiom recognition (21 idiom patterns)
+  │     ├─ Contradiction resolution
+  │     └─ Neutral sentiment detection
+  │
+  ├─ 4. Dual-Model Ensemble Inference
+  │     ├─ Naive Bayes (CountVectorizer) ──── weight: 0.6
+  │     ├─ Logistic Regression (TF-IDF) ──── weight: 0.4
+  │     └─ Weighted probability averaging + confidence calibration
+  │
+  └─ Output: { sentiment, confidence, model_used, influential_words }
+```
+
+The early-exit design keeps latency low for obvious cases while reserving the full pipeline for genuinely ambiguous text.
+
+## Key Technical Details
+
+### Ensemble Architecture
+
+Two classifiers with independent feature extraction pipelines:
+
+- **Naive Bayes** with CountVectorizer and Laplace smoothing — good at capturing word presence patterns
+- **Logistic Regression** with TF-IDF and L2 regularization — better at weighting term importance
+
+Predictions are combined via weighted probability averaging (60/40 split), producing calibrated confidence scores between 50–95%.
+
+### Feature Engineering
+
+Each input produces a ~10,000-dimensional feature vector built from multiple sources:
+
+| Source | Dimensions | What It Captures |
+|--------|-----------|-----------------|
+| TF-IDF / Count vectorization | ~10,000 | Word importance and frequency patterns |
+| VADER sentiment scores | 5 | Lexicon-based sentiment (handles emoticons, intensifiers) |
+| SentiWordNet scores | 2 | WordNet synset-level sentiment averaging |
+| Custom domain lexicon | 2 | Domain-specific terms (67 movie/review terms with manual scores) |
+
+Text and lexicon features are fused via `scipy.sparse.hstack` to keep memory usage efficient at scale.
+
+### Linguistic Pattern Detection
+
+Beyond statistical classification, the system applies rule-based detection for patterns that classifiers typically struggle with:
+
+- **Negation handling** — Identifies negation triggers ("not", "never", "don't") and marks affected words within a 5-word scope. Handles sentence boundaries, double negations, and 20+ special phrases like "not bad at all"
+- **Sarcasm detection** — Six pattern categories covering sleep/boredom sarcasm ("perfect if you enjoy falling asleep"), mocking praise, negative comparisons, and more
+- **Contrast markers** — Splits text at markers ("but", "however", "despite") with weighted analysis (45% before, 55% after the marker). Dynamically adjusts weights based on term strength
+- **Idiom recognition** — 21 idiom patterns ("guilty pleasure", "waste of time", "worth every penny") that override model output with known sentiment
+- **Domain adaptation** — Detects restaurant reviews via food/service term counting and adjusts analysis accordingly. Recognizes movie titles via NER and a cached title database
+
+### Training Data
+
+Models are trained on a combined corpus from three sources:
+
+- **NLTK Movie Reviews** — ~2,000 labeled reviews
+- **IMDB Large Movie Review Dataset** — up to 25,000 reviews
+- **Twitter Sentiment Dataset** — 20,000 tweets for short-form text coverage
+
+Training includes negation-aware preprocessing (appending `_NEG` tokens to negated words) and contrast marker tokenization.
+
+## Evaluation
+
+### IMDB Benchmark
+
+Evaluated on the IMDB Large Movie Review Dataset test split (2,000 stratified reviews). Metrics computed with `sklearn.metrics`.
+
+| Component | Accuracy | Precision | Recall | F1 |
+|-----------|----------|-----------|--------|------|
+| VADER (lexicon baseline) | 73.20% | 68.15% | 87.10% | 76.47% |
+| Naive Bayes (raw) | 82.05% | 87.05% | 75.30% | 80.75% |
+| **Logistic Regression (raw)** | **84.55%** | **86.25%** | **82.20%** | **84.18%** |
+| Weighted Ensemble (NB + LR) | 82.20% | 86.84% | 75.90% | 81.00% |
+| Full System (ensemble + rules) | 68.45% | 66.00% | 76.10% | 70.69% |
+| DistilBERT (SST-2, SOTA ref.) | 90.65% | 93.38% | 87.50% | 90.35% |
+
+### Ablation Study
+
+Each row adds one component to the pipeline:
+
+| Component | Accuracy | F1 |
+|-----------|----------|------|
+| VADER lexicon only | 73.20% | 76.47% |
+| + Naive Bayes (CountVectorizer) | 82.05% | 80.75% |
+| + Logistic Regression (TF-IDF) | 84.55% | 84.18% |
+| + Weighted Ensemble (0.6 NB + 0.4 LR) | 82.20% | 81.00% |
+| + Rule-based layer (full system) | 68.45% | 70.69% |
+
+### Key Findings
+
+**Rule-based layer hurts on standard benchmarks.** The full system (68.45%) scores lower than raw models because safety checks, neutral detection, and sarcasm patterns over-trigger on straightforward IMDB reviews. For example, reviews mentioning "suicide" in plot descriptions get flagged by the safety check, and balanced-but-positive reviews trigger neutral detection.
+
+However, the rule-based layer is specifically designed for edge cases that classifiers struggle with — sarcasm, double negation, contrast markers, idioms. These patterns are rare in IMDB but common in short-form user input (the system's target use case).
+
+**LR outperforms the ensemble.** Logistic Regression alone (84.55%) beats the weighted ensemble (82.20%) because the 0.6 NB weight pulls the ensemble toward Naive Bayes's lower recall (75.30% vs 82.20%). The weights were tuned for edge-case robustness rather than raw benchmark performance.
+
+**Honest gap with DistilBERT.** DistilBERT (90.65%) outperforms our best model by ~6 points. The gap is expected — DistilBERT has 66M parameters pretrained on massive corpora. Our system offers different trade-offs: interpretable outputs (influential words, detection explanations, pipeline stage attribution), CPU-only inference at ~50ms/review, and ~500KB model files vs ~260MB.
+
+### Reproduce These Results
+
+```bash
+python evaluate.py --quick            # 2,000 samples (~90s)
+python evaluate.py                    # Full 25,000 reviews
+python evaluate.py --no-distilbert    # Skip DistilBERT (no torch needed)
+```
+
+All numbers match `artifacts/evaluation_results.json`.
+
+## Deployment
+
+SenseCatch runs a split architecture designed to keep the frontend fast and the backend focused on ML inference:
+
+- **Frontend** — Static HTML/CSS/JS served via Vercel CDN (zero cold start)
+- **Backend API** — Flask + Gunicorn on Render, serving the `/analyze` endpoint
+- **Automatic environment detection** — Production traffic hits `api.sensecatch.ai`, preview deployments route to a staging backend
+
+The frontend and backend deploy independently; pushing to `main` triggers both.
 
 ## Getting Started
 
-### Prerequisites
-
-- Python 3.8+
-- Required Python packages (install via pip):
-  ```
-  pip install numpy pandas matplotlib scikit-learn nltk vader-sentiment
-  ```
-
-### Installation
-
-1. Clone the repository:
-   ```
-   git clone https://github.com/berkinksk/SenseCatch.git
-   cd SenseCatch
-   ```
-
-2. Install dependencies:
-   ```
-   pip install -r requirements.txt
-   ```
-
-### Usage
-
-#### Basic Sentiment Analysis
-
-```python
-from ensemble_model import SentimentEnsemble
-
-# Initialize the model
-model = SentimentEnsemble()
-
-# Predict sentiment
-result = model.predict("This movie isn't bad at all, I actually enjoyed most of it.")
-print(f"Sentiment: {result['sentiment']}, Confidence: {result['confidence']}%")
-```
-
-#### Running Tests
-
-The project includes a comprehensive testing framework to evaluate model performance:
-
 ```bash
-# Run all tests
-python run_tests.py
+# Clone and set up
+git clone https://github.com/berkinksk/SenseCatch.git
+cd SenseCatch
+python -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
 
-# Run specific test categories
-python run_tests.py --categories negation,sarcasm
+# Download NLP resources
+python src/sensecatch/utils/nltk_downloader.py
 
-# Test specific models
-python run_tests.py --models logistic_regression
+# Generate models if not present
+python src/sensecatch/utils/model_consistency.py
 
-# Generate visualizations
-python run_tests.py --visualize
-
-# Compare with previous results
-python run_tests.py --compare latest
+# Run the app locally
+python src/sensecatch/app.py
 ```
 
-## Testing Framework
+**Run tests:**
+```bash
+python tests/run_tests.py
+python tests/run_tests.py --categories negation,sarcasm
+python tests/run_tests.py --visualize
+```
 
-SenseCatch includes an advanced testing and visualization framework:
+**Basic usage in Python:**
+```python
+from src.sensecatch.ensemble_model import SentimentEnsemble
 
-### Test Components
-
-- **test_improvements.py**: Main testing script with diagnostics
-- **test_visualizer.py**: Generates visual performance reports
-- **run_tests.py**: Command-line interface for running tests
-
-### Key Testing Features
-
-- **Category-based Testing**: Test specific types of language patterns
-- **Diagnostic Tracing**: Track text processing through the pipeline
-- **Performance Metrics**: Accuracy by category, confidence analysis
-- **Result Visualization**: Charts and reports for easy analysis
-
-### Visualization Reports
-
-The testing framework generates comprehensive HTML reports with:
-
-- Overall accuracy charts
-- Category-specific performance
-- Confidence-accuracy relationship
-- Confusion matrices
-- Pipeline timing analysis
-
-## Technical Implementation
-
-### Advanced ML Components
-
-- **Dual-Model Architecture**:
-  - Probabilistic generative model (Naive Bayes) with Laplace smoothing
-  - Discriminative linear classifier (Logistic Regression) with L2 regularization
-  - Independent feature extraction pipelines for each model type
-  - Custom calibration techniques for confidence estimation
-
-- **Linguistic Pattern Processing**:
-  - Advanced negation scope detection with context window analysis
-  - Double and triple negation resolution algorithms
-  - Sarcasm detection with pattern recognition
-  - Idiom recognition with semantic override capabilities
-
-## Empirical Evaluation
-
-> **Note:** The following results are based on the internal test suite of 32 hand-crafted examples designed to evaluate specific linguistic phenomena. They do not represent performance on standard benchmarks. Comprehensive evaluation on established datasets (IMDB, SST, SemEval, etc.) is planned for future work.
-
-Our recent test results from the internal diagnostic framework show:
-
-| Model | Internal Test Accuracy | Observations on Challenging Cases |
-|-------|-----------------|-------------------|
-| Naive Bayes | 81.25% | Variable performance on negation (57%) |
-| Logistic Regression | 81.25% | Strong on sarcasm test cases, weaker on contradiction |
-| Combined Analysis | - | Good performance on idioms and conclusion markers |
-
-Performance varies significantly by linguistic category in our test suite:
-- Sarcasm detection: Strong performance on our test cases
-- Idiom recognition: Good handling of test examples
-- Negation handling: Challenging area (~57% accuracy)
-- Contrast handling: Mixed results (~67% accuracy)
-- Contradiction cases: Needs improvement
-
-### Future Evaluation Plans
-
-We plan to evaluate the models on standard sentiment analysis benchmarks:
-- Stanford Sentiment Treebank (SST)
-- IMDB Movie Reviews Dataset
-- SemEval competition datasets
-- Twitter Sentiment Analysis Dataset
-
-This will provide more comprehensive and comparable performance metrics.
+model = SentimentEnsemble()
+result = model.predict("The acting was terrible but the storyline kept me hooked.")
+print(result)  # {'sentiment': 'Positive', 'confidence': 72.5, 'model_used': '...', ...}
+```
 
 ## Project Structure
 
-- `src/sensecatch/ensemble_model.py`: Core sentiment analysis engine with `SentimentEnsemble` class
-- `src/training/train_models.py`: Model training scripts
-- `tests/test_improvements.py`: Testing framework with diagnostics (`DiagnosticEnsemble` class)
-- `tests/test_visualizer.py`: Visualization generator
-- `tests/run_tests.py`: Command-line test runner
-- `data/`: Training and validation datasets
-- `artifacts/test_results/`: Test outputs and reports
+```
+src/sensecatch/
+├── app.py                  # Flask API (routes, CORS, error handling)
+├── ensemble_model.py       # Core SentimentEnsemble class (2,200+ lines)
+├── sentiment_lexicon.py    # VADER, SentiWordNet, and custom lexicon features
+└── utils/
+    ├── model_consistency.py    # Fallback model generation
+    ├── nltk_downloader.py      # NLTK resource setup
+    └── ...
+src/training/
+├── train_models.py         # Multi-dataset training pipeline
+└── dataset_augmentation.py # Data augmentation utilities
+tests/
+├── test_improvements.py    # Diagnostic test suite with tracing
+├── test_visualizer.py      # HTML report generation
+└── run_tests.py            # CLI test runner
+```
 
-## Contributing
+## Tech Stack
 
-Contributions are welcome! Key areas for improvement:
-
-1. Adding more test cases for challenging linguistic patterns
-2. Enhancing the diagnostic capabilities
-3. Improving the visualization features
-4. Adding support for additional languages
-5. Extending model capabilities for domain-specific sentiment analysis
+Python 3.9 | Flask | scikit-learn | NLTK | NumPy | SciPy | VADER | SentiWordNet
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Acknowledgments
-
-- NLTK and scikit-learn libraries
-- VADER sentiment analysis tool
-- All contributors who helped improve the model accuracy
+MIT License — see [LICENSE](LICENSE) for details.
 
 ## Author
 
-Berkin Kaynar
+**Berkin Kaynar**

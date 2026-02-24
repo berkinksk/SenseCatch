@@ -40,10 +40,10 @@ nltk_data/
 # Ignore generated artifact and dataset folders
 artifacts/
 data/
+datasets/
 docs/
 
 # Project-specific files that should never be committed
-ensemble_model.py.backup
-ensemble_model.py.methods
 project_context_prompt.txt
-committed_model_methods.txt
+project-plans.md
+.gitattributes

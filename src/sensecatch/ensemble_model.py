@@ -579,7 +579,11 @@ class SentimentEnsemble:
                 "can't recommend": {"sentiment": "negative", "confidence": 0.91},
                 "cannot recommend": {"sentiment": "negative", "confidence": 0.91},
                 
-                # Double negation cases
+                # Double negation cases (comma-less variants for post-cleaning text)
+                "wasn't great nor": {"sentiment": "negative", "confidence": 0.89},
+                "wasn't good nor": {"sentiment": "negative", "confidence": 0.89},
+                "isn't great nor": {"sentiment": "negative", "confidence": 0.89},
+                "weren't good nor": {"sentiment": "negative", "confidence": 0.89},
                 "wasn't great, nor": {"sentiment": "negative", "confidence": 0.89},
                 "wasn't good, nor": {"sentiment": "negative", "confidence": 0.89},
                 "isn't great, nor": {"sentiment": "negative", "confidence": 0.89},
@@ -778,14 +782,16 @@ class SentimentEnsemble:
         try:
             # Look for contrast markers in the text
             contrast_markers = [
-                'but ', 'although ', 'though ', 'however ', 'despite ', 'yet ', 
-                'nevertheless ', 'regardless ', 'even though ', 'notwithstanding ', 'in spite of '
+                'but ', 'although ', 'though ', 'however ', 'despite ', 'yet ',
+                'nevertheless ', 'regardless ', 'even though ', 'notwithstanding ',
+                'in spite of ', 'while '
             ]
             
+            text_lower = text.lower()
             for marker in contrast_markers:
-                if marker in text:
+                if marker in text_lower:
                     # Parse out the parts before and after the contrast marker
-                    parts = text.split(marker, 1)
+                    parts = text_lower.split(marker, 1)
                     before_text = parts[0].strip()
                     after_text = parts[1].strip()
                     
@@ -796,19 +802,21 @@ class SentimentEnsemble:
                     # Check if this is a positive contrast marker ("but" followed by positive phrases)
                     # or a negative contrast marker ("despite" followed by negative phrases)
                     strong_positive_markers = [
-                        "good", "great", "excellent", "amazing", "fantastic", "wonderful", 
-                        "enjoyed", "love", "loved", "best", "perfect", "delicious", "recommend",
-                        "worth", "impressive", "tasty", "flavorful", "yummy", "delightful", 
-                        "satisfying", "mouthwatering", "scrumptious", "heavenly", "divine", 
-                        "superb", "outstanding", "stellar", "enjoyed", "impressed", "win",
-                        "pleasure", "surprisingly", "pleasantly", "favorite", "liked"
+                        "good", "great", "excellent", "amazing", "fantastic", "wonderful",
+                        "enjoyed", "love", "loved", "best", "better", "perfect", "delicious",
+                        "recommend", "worth", "impressive", "tasty", "flavorful", "yummy",
+                        "delightful", "satisfying", "mouthwatering", "scrumptious", "heavenly",
+                        "divine", "superb", "outstanding", "stellar", "enjoyed", "impressed",
+                        "win", "pleasure", "surprisingly", "pleasantly", "favorite", "liked",
+                        "justified", "quality", "exceptional", "remarkable"
                     ]
-                    
+
                     strong_negative_markers = [
                         "bad", "terrible", "awful", "horrible", "disgusting", "disappointing",
                         "mediocre", "bland", "tasteless", "inedible", "overcooked", "undercooked",
                         "stale", "rotten", "expensive", "overpriced", "poor", "worst", "trash",
-                        "garbage", "waste", "useless", "boring", "dull", "pointless", "hated"
+                        "garbage", "waste", "useless", "boring", "dull", "pointless", "hated",
+                        "outrageous", "ridiculous", "absurd"
                     ]
                     
                     # Added emphasis words that boost the effect of positive/negative terms
@@ -882,6 +890,10 @@ class SentimentEnsemble:
                         (r'secretly enjoyed', True),      # positive
                         (r'laughed more than', True),     # positive
                         (r'surprisingly good', True),     # positive
+                        (r'never had better', True),      # positive superlative
+                        (r'worth every penny', True),     # positive value
+                        (r'justified every', True),       # positive value
+                        (r'every penny', True),           # positive value
                         (r'waste of time', False),        # negative
                         (r'wouldn\'t recommend', False),  # negative
                     ]
@@ -923,10 +935,10 @@ class SentimentEnsemble:
                                         has_forcing_negative = True
                                         strong_neg_count += 2  # Double weight for explicit food quality statements
                         
-                        # Restaurant "despite/although/even though" + negative service + positive food = positive
-                        if (marker in ['despite ', 'although ', 'even though '] and 
-                            service_term_count >= 1 and 
-                            food_term_count >= 1 and 
+                        # Restaurant "despite/although/even though/while" + negative service + positive food = positive
+                        if (marker in ['despite ', 'although ', 'even though ', 'while '] and
+                            service_term_count >= 1 and
+                            food_term_count >= 1 and
                             strong_pos_count > 0):
                             # Example: "Despite the noisy atmosphere, the food was excellent"
                             logger.info(f"Restaurant review with positive food despite negative service/ambiance")
@@ -1991,15 +2003,16 @@ class SentimentEnsemble:
         """
         text = text.lower()
         contrast_markers = [
-            'but ', 'although ', 'though ', 'however ', 'despite ', 'yet ', 
-            'nevertheless ', 'regardless ', 'even though ', 'notwithstanding ', 'in spite of '
+            'but ', 'although ', 'though ', 'however ', 'despite ', 'yet ',
+            'nevertheless ', 'regardless ', 'even though ', 'notwithstanding ',
+            'in spite of ', 'while '
         ]
-        
+
         for marker in contrast_markers:
             if marker in text:
                 logger.info(f"Contrast marker '{marker.strip()}' found in text")
                 return True
-                
+
         return False
         
     def _get_sentiment_after_contrast(self, text):
