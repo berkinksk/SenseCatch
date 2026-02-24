@@ -80,21 +80,50 @@ Training includes negation-aware preprocessing (appending `_NEG` tokens to negat
 
 ## Evaluation
 
-Results from the internal diagnostic test suite (32 hand-crafted examples targeting specific linguistic phenomena):
+### IMDB Benchmark
 
-| Model | Accuracy | Strengths | Weaknesses |
-|-------|----------|-----------|------------|
-| Naive Bayes | 81.25% | Simple sentiment, idioms | Negation (57%) |
-| Logistic Regression | 81.25% | Sarcasm, conclusion markers | Contradiction |
+Evaluated on the IMDB Large Movie Review Dataset test split (2,000 stratified reviews). Metrics computed with `sklearn.metrics`.
 
-| Category | Accuracy |
-|----------|----------|
-| Sarcasm detection | Strong |
-| Idiom recognition | Strong |
-| Contrast handling | ~67% |
-| Negation handling | ~57% |
+| Component | Accuracy | Precision | Recall | F1 |
+|-----------|----------|-----------|--------|------|
+| VADER (lexicon baseline) | 73.20% | 68.15% | 87.10% | 76.47% |
+| Naive Bayes (raw) | 82.05% | 87.05% | 75.30% | 80.75% |
+| **Logistic Regression (raw)** | **84.55%** | **86.25%** | **82.20%** | **84.18%** |
+| Weighted Ensemble (NB + LR) | 82.20% | 86.84% | 75.90% | 81.00% |
+| Full System (ensemble + rules) | 68.45% | 66.00% | 76.10% | 70.69% |
+| DistilBERT (SST-2, SOTA ref.) | 90.65% | 93.38% | 87.50% | 90.35% |
 
-> These results are from a targeted internal test suite, not standard benchmarks. The test cases are intentionally difficult — they focus on edge cases like sarcasm, double negation, and mixed sentiment that most sentiment tools get wrong.
+### Ablation Study
+
+Each row adds one component to the pipeline:
+
+| Component | Accuracy | F1 |
+|-----------|----------|------|
+| VADER lexicon only | 73.20% | 76.47% |
+| + Naive Bayes (CountVectorizer) | 82.05% | 80.75% |
+| + Logistic Regression (TF-IDF) | 84.55% | 84.18% |
+| + Weighted Ensemble (0.6 NB + 0.4 LR) | 82.20% | 81.00% |
+| + Rule-based layer (full system) | 68.45% | 70.69% |
+
+### Key Findings
+
+**Rule-based layer hurts on standard benchmarks.** The full system (68.45%) scores lower than raw models because safety checks, neutral detection, and sarcasm patterns over-trigger on straightforward IMDB reviews. For example, reviews mentioning "suicide" in plot descriptions get flagged by the safety check, and balanced-but-positive reviews trigger neutral detection.
+
+However, the rule-based layer is specifically designed for edge cases that classifiers struggle with — sarcasm, double negation, contrast markers, idioms. These patterns are rare in IMDB but common in short-form user input (the system's target use case).
+
+**LR outperforms the ensemble.** Logistic Regression alone (84.55%) beats the weighted ensemble (82.20%) because the 0.6 NB weight pulls the ensemble toward Naive Bayes's lower recall (75.30% vs 82.20%). The weights were tuned for edge-case robustness rather than raw benchmark performance.
+
+**Honest gap with DistilBERT.** DistilBERT (90.65%) outperforms our best model by ~6 points. The gap is expected — DistilBERT has 66M parameters pretrained on massive corpora. Our system offers different trade-offs: interpretable outputs (influential words, detection explanations, pipeline stage attribution), CPU-only inference at ~50ms/review, and ~500KB model files vs ~260MB.
+
+### Reproduce These Results
+
+```bash
+python evaluate.py --quick            # 2,000 samples (~90s)
+python evaluate.py                    # Full 25,000 reviews
+python evaluate.py --no-distilbert    # Skip DistilBERT (no torch needed)
+```
+
+All numbers match `artifacts/evaluation_results.json`.
 
 ## Deployment
 
