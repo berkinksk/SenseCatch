@@ -314,17 +314,27 @@ def evaluate_distilbert(texts, labels):
     """DistilBERT (SST-2 fine-tuned) as a SOTA reference."""
     try:
         from transformers import pipeline
+        import torch
     except ImportError:
         print(
             "\n  [Skipped] DistilBERT requires: pip install transformers torch"
         )
         return None
 
-    print("  Loading DistilBERT model...")
+    # Auto-select the fastest available device: CUDA GPU, then Apple
+    # Silicon GPU (MPS), else CPU. Predictions are device-independent.
+    if torch.cuda.is_available():
+        device = 0
+    elif getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+        device = "mps"
+    else:
+        device = -1
+
+    print(f"  Loading DistilBERT model... (device={device})")
     classifier = pipeline(
         "sentiment-analysis",
         model="distilbert-base-uncased-finetuned-sst-2-english",
-        device=-1,
+        device=device,
         truncation=True,
         max_length=512,
     )
