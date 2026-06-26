@@ -284,10 +284,162 @@ def run_imdb_only_benchmark():
     return out
 
 
+# ----------------------------------------------------------------------------
+# 7.7 - FOUR DEPLOYED GENERAL models (the app dropdown). All CalibratedClassifierCV
+# (cv=5 on TRAIN -> predict_proba). Trained on the GENERAL corpus (NLTK+IMDB),
+# preprocessed via the SERVING path (ensemble._preprocess_text) so train==serve.
+# Saved app-compatible: 3-tuple (model, text_vectorizer, dict_vectorizer).
+# Serve-time dim handling aligns to model.n_features_in_ (ensemble_model.py ~1624
+# and evaluate.build_features), so each model may have its own feature dim.
+# NB/LR OVERWRITE the deployed pkls; LinearSVC/NBSVM are new (loader wiring = 7.8).
+# ----------------------------------------------------------------------------
+MODELS_DIR = os.path.join(PROJECT_ROOT, "models")
+DEPLOY_BACKUP = os.path.join(PROJECT_ROOT, "artifacts", "models_backup_pre-step7-deploy")
+DEPLOY_RESULTS = os.path.join(PROJECT_ROOT, "artifacts", "deploy_results.json")
+_FOOTGUN_FILES = ("count_vectorizer.pkl", "tfidf_vectorizer.pkl", "dict_vectorizer.pkl",
+                  "feature_dimensions.pkl", "feature_info.txt")
+
+
+def backup_current_models():
+    """Back up EVERY current models/*.pkl and *.txt to DEPLOY_BACKUP with SHA-256 (footgun-safe)."""
+    import shutil, hashlib, glob, json
+    os.makedirs(DEPLOY_BACKUP, exist_ok=True)
+    hashes = {}
+    files = sorted(glob.glob(os.path.join(MODELS_DIR, "*.pkl"))) + sorted(glob.glob(os.path.join(MODELS_DIR, "*.txt")))
+    for f in files:
+        shutil.copy2(f, DEPLOY_BACKUP)
+        with open(f, "rb") as fh:
+            hashes[os.path.basename(f)] = hashlib.sha256(fh.read()).hexdigest()
+    with open(os.path.join(DEPLOY_BACKUP, "HASHES.json"), "w") as fh:
+        json.dump(hashes, fh, indent=2)
+    return DEPLOY_BACKUP, hashes
+
+
+def _remove_footgun_files():
+    """CONTRACT footgun: separate vectorizer/dim pkls OVERRIDE the tuple's vectorizers. Remove any present."""
+    removed = []
+    for name in _FOOTGUN_FILES:
+        p = os.path.join(MODELS_DIR, name)
+        if os.path.exists(p):
+            os.remove(p); removed.append(name)
+    return removed
+
+
+def _lexicon_dicts(lexicon, processed):
+    """9-dim lexicon dict features; negatives clamped to 0 (MNB needs non-negative)."""
+    out = []
+    for t in processed:
+        d = lexicon.extract_all_features(t)
+        for k, v in list(d.items()):
+            if isinstance(v, (int, float)) and v < 0:
+                d[k] = 0.0
+        out.append(d)
+    return out
+
+
+def train_deployed_models(n_sample=None):
+    """Train + save the FOUR deployed GENERAL models (NB, LR, LinearSVC, NBSVM), all calibrated.
+    n_sample != None => DRY-RUN on a tiny subset (small vocab) to validate the pipeline fast.
+    Writes artifacts/deploy_results.json and returns the results dict."""
+    import json, time, pickle, random
+    import numpy as np
+    from scipy.sparse import hstack
+    from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
+    from sklearn.feature_extraction import DictVectorizer
+    from sklearn.pipeline import Pipeline
+    from sklearn.naive_bayes import MultinomialNB
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.svm import LinearSVC
+    from sklearn.calibration import CalibratedClassifierCV
+    from sklearn.metrics import accuracy_score
+    import evaluate as ev
+    from src.sensecatch.nbsvm_transformer import NBLogCountRatio
+
+    t0 = time.time()
+    backup_current_models()
+
+    corpus = load_training_corpus()
+    tr_texts, ytr = corpus["texts"], list(corpus["labels"])
+    dev_texts, ydev = load_imdb_dev()
+    if n_sample:
+        idx = list(range(len(tr_texts))); random.Random(0).shuffle(idx); idx = idx[:n_sample]
+        tr_texts = [tr_texts[i] for i in idx]; ytr = [ytr[i] for i in idx]
+        k = max(60, n_sample // 4); dev_texts, ydev = dev_texts[:k], ydev[:k]
+    ytr = np.asarray(ytr); ydev = np.asarray(ydev)
+
+    ensemble = ev.load_ensemble()
+    print(f"[deploy] preprocessing {len(tr_texts)} train + {len(dev_texts)} dev via serving path "
+          f"({'DRY-RUN' if n_sample else 'FULL; cold cache ~40min'})...", flush=True)
+    tr_proc = ev.preprocess_texts(ensemble, tr_texts)
+    dev_proc = ev.preprocess_texts(ensemble, dev_texts)
+    lex = ensemble.lexicon
+
+    dv = DictVectorizer()
+    Ltr = dv.fit_transform(_lexicon_dicts(lex, tr_proc))
+    Ldev = dv.transform(_lexicon_dicts(lex, dev_proc))
+
+    mf = 2000 if n_sample else 30000
+    mindf_nbsvm = 2 if n_sample else 5
+    specs = [
+        ("naive_bayes", CountVectorizer(max_features=mf, ngram_range=(1, 2), min_df=2, stop_words=None),
+         (lambda: MultinomialNB(alpha=0.1)), "naive_bayes.pkl"),
+        ("logistic_regression", TfidfVectorizer(max_features=mf, ngram_range=(1, 2), min_df=2,
+                                                sublinear_tf=True, stop_words=None),
+         (lambda: LogisticRegression(C=10.0, max_iter=1000, solver="liblinear")), "logistic_regression.pkl"),
+        ("linear_svc", TfidfVectorizer(max_features=mf, ngram_range=(1, 2), min_df=2,
+                                       sublinear_tf=True, stop_words=None),
+         (lambda: LinearSVC(C=1.0, max_iter=4000)), "linear_svc.pkl"),
+        ("nbsvm", Pipeline([("cv", CountVectorizer(binary=True, ngram_range=(1, 2),
+                                                   token_pattern=r"[^\s]+", min_df=mindf_nbsvm)),
+                            ("nb", NBLogCountRatio())]),
+         (lambda: LinearSVC(C=0.5, max_iter=4000)), "nbsvm.pkl"),
+    ]
+
+    results, dev_probas = {}, {}
+    for name, tv, make_base, fname in specs:
+        Xtr_t = tv.fit_transform(tr_proc, ytr) if isinstance(tv, Pipeline) else tv.fit_transform(tr_proc)
+        Xdev_t = tv.transform(dev_proc)
+        Xtr = hstack([Xtr_t, Ltr]).tocsr(); Xdev = hstack([Xdev_t, Ldev]).tocsr()
+        clf = CalibratedClassifierCV(make_base(), cv=5)
+        clf.fit(Xtr, ytr)
+        dev_acc = float(accuracy_score(ydev, clf.predict(Xdev)))
+        with open(os.path.join(MODELS_DIR, fname), "wb") as f:
+            pickle.dump((clf, tv, dv), f)
+        results[name] = {"dev_accuracy": round(dev_acc, 4), "n_features": int(Xtr.shape[1]), "file": fname}
+        if name in ("naive_bayes", "logistic_regression"):
+            dev_probas[name] = clf.predict_proba(Xdev)
+        print(f"[deploy] {name}: dev_acc {dev_acc:.4f}  ({Xtr.shape[1]} feats)  -> models/{fname}", flush=True)
+
+    # re-tune NB+LR ensemble weights on DEV only
+    best_w, best_acc = 0.6, -1.0
+    for w in [0.3, 0.4, 0.5, 0.6, 0.7]:
+        comb = w * dev_probas["naive_bayes"] + (1 - w) * dev_probas["logistic_regression"]
+        a = float(accuracy_score(ydev, np.argmax(comb, axis=1)))
+        if a > best_acc:
+            best_acc, best_w = a, w
+
+    removed = _remove_footgun_files()
+    out = {"track": "deployed general (4 calibrated models)", "dry_run": bool(n_sample),
+           "n_train": int(len(ytr)), "n_dev": int(len(ydev)), "models": results,
+           "ensemble_weights": {"naive_bayes": best_w, "logistic_regression": round(1 - best_w, 2)},
+           "ensemble_dev_acc": round(best_acc, 4), "backup_dir": DEPLOY_BACKUP,
+           "footgun_files_removed": removed, "runtime_sec": round(time.time() - t0, 1)}
+    os.makedirs(os.path.dirname(DEPLOY_RESULTS), exist_ok=True)
+    with open(DEPLOY_RESULTS, "w") as f:
+        json.dump(out, f, indent=2)
+    print(f"[deploy] ensemble weights (dev-tuned): NB {best_w} / LR {round(1-best_w,2)} (dev acc {best_acc:.4f})")
+    print(f"[deploy] saved 4 models; footgun files removed: {removed or 'none'}; "
+          f"results -> {DEPLOY_RESULTS}; runtime {out['runtime_sec']}s")
+    return out
+
+
 if __name__ == "__main__":
     if "--imdb-benchmark" in sys.argv:
-        run_imdb_only_benchmark()
-        sys.exit(0)
+        run_imdb_only_benchmark(); sys.exit(0)
+    if "--dry-run-deploy" in sys.argv:
+        print("DRY-RUN:", train_deployed_models(n_sample=300)); sys.exit(0)
+    if "--train-deployed" in sys.argv:
+        print("DEPLOY:", train_deployed_models()); sys.exit(0)
     print("=== SenseCatch retrain.py - corpus foundation (no training) ===")
     corpus = load_training_corpus()
     npos = sum(corpus["labels"])
@@ -298,4 +450,3 @@ if __name__ == "__main__":
     print(f"DEV (held-out, for tuning): {len(dev_l)} ({sum(dev_l)} pos / {len(dev_l) - sum(dev_l)} neg)")
     print("TEST split is NOT loaded here (touched once, at final eval).")
     print("NO Twitter. Preprocessing = ensemble._preprocess_text (cached, train==serve).")
-
