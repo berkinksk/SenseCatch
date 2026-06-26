@@ -19,6 +19,7 @@ Usage:
 import os
 import sys
 import json
+import random
 import time
 import shutil
 import tarfile
@@ -47,6 +48,7 @@ IMDB_URL = "https://ai.stanford.edu/~amaas/data/sentiment/aclImdb_v1.tar.gz"
 IMDB_DIR = os.path.join(PROJECT_ROOT, "datasets", "aclImdb")
 IMDB_TAR = os.path.join(PROJECT_ROOT, "datasets", "aclImdb_v1.tar.gz")
 RESULTS_PATH = os.path.join(PROJECT_ROOT, "artifacts", "evaluation_results.json")
+PREPROCESS_VERSION = "v1"  # bump when ensemble._preprocess_text changes -> invalidates the preprocess cache
 
 # ---------------------------------------------------------------------------
 # IMDB dataset
@@ -85,15 +87,22 @@ def download_imdb():
     print("Extraction complete.")
 
 
-def load_imdb_test(max_per_class=None):
-    """Load the IMDB test split. Returns (texts, labels) where labels are 0/1."""
+def load_imdb_test(max_per_class=None, seed=42):
+    """Load the IMDB test split. Returns (texts, labels) where labels are 0/1.
+
+    When max_per_class is set (quick mode), draw a SEEDED, class-balanced
+    RANDOM sample per class — NOT the first-N-sorted slice, which Step 6.4
+    showed was ~2-4 pp optimistically biased. A random sample is an
+    unbiased preview of the full test set, and stays reproducible.
+    """
     texts, labels = [], []
+    rng = random.Random(seed)
 
     for sentiment, label in [("pos", 1), ("neg", 0)]:
         folder = os.path.join(IMDB_DIR, "test", sentiment)
         filenames = sorted(os.listdir(folder))
-        if max_per_class:
-            filenames = filenames[:max_per_class]
+        if max_per_class and max_per_class < len(filenames):
+            filenames = sorted(rng.sample(filenames, max_per_class))
         for fname in filenames:
             with open(os.path.join(folder, fname), "r", encoding="utf-8") as f:
                 texts.append(f.read())
@@ -151,7 +160,28 @@ def load_ensemble():
 
 
 def preprocess_texts(ensemble, texts):
-    """Preprocess all texts once using the ensemble's pipeline. Returns list of strings."""
+    """Preprocess all texts once using the ensemble's pipeline. Returns list of strings.
+
+    Caches the preprocessed TEXT to disk (model-independent) keyed by a hash of
+    (PREPROCESS_VERSION + the input texts). The NLTK pos_tag/ne_chunk pass
+    dominates runtime (~0.1s/review -> ~41 min on 25K), so a warm run skips it.
+    Feature matrices are deliberately NOT cached — they change on every retrain.
+    """
+    import hashlib
+
+    cache_dir = os.path.join(PROJECT_ROOT, "artifacts", "cache")
+    key = hashlib.sha256(
+        (PREPROCESS_VERSION + "\x00".join(texts)).encode("utf-8")
+    ).hexdigest()[:16]
+    cache_path = os.path.join(cache_dir, f"preproc_{key}.json")
+
+    if os.path.isfile(cache_path):
+        with open(cache_path, "r", encoding="utf-8") as f:
+            cached = json.load(f)
+        if len(cached) == len(texts):
+            print(f"  Loaded {len(cached)} preprocessed texts from cache.")
+            return cached
+
     total = len(texts)
     step = max(1, total // 10)  # report every 10%
     print(f"  Preprocessing {total} texts...")
@@ -161,6 +191,10 @@ def preprocess_texts(ensemble, texts):
         if (i + 1) % step == 0 or (i + 1) == total:
             pct = (i + 1) / total * 100
             print(f"    {i + 1}/{total} ({pct:.0f}%) preprocessed", flush=True)
+
+    os.makedirs(cache_dir, exist_ok=True)
+    with open(cache_path, "w", encoding="utf-8") as f:
+        json.dump(processed, f)
     return processed
 
 
