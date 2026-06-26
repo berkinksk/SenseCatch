@@ -134,8 +134,161 @@ def preprocess(texts, ensemble=None):
     return ev.preprocess_texts(ensemble, texts)
 
 
+# ----------------------------------------------------------------------------
+# 7.6 - IMDB-ONLY BENCHMARK track  (REFERENCE numbers only; NOT deployed).
+# Trained on IMDB-train only, tuned on the IMDB DEV set, evaluated on IMDB TEST
+# (25,000) ONCE. Standard/faithful per-method recipe on RAW text -> sklearn
+# vectorizers (NOT the app's heavy _preprocess_text), so it runs fast.
+# ----------------------------------------------------------------------------
+BENCHMARK_PATH = os.path.join(PROJECT_ROOT, "artifacts", "benchmark_imdb_only.json")
+_C_GRID = [0.1, 1.0, 10.0]
+
+
+def _wilson_ci(acc, n, z=1.96):
+    import math
+    if n == 0:
+        return (0.0, 0.0)
+    denom = 1 + z * z / n
+    center = (acc + z * z / (2 * n)) / denom
+    half = (z * math.sqrt(acc * (1 - acc) / n + z * z / (4 * n * n))) / denom
+    return (center - half, center + half)
+
+
+def _mcnemar(y_true, pred_a, pred_b):
+    """McNemar's test, model_b vs model_a. Returns (a_only_correct, b_only_correct, chi2, p)."""
+    import numpy as np
+    from scipy.stats import chi2 as _chi2
+    yt, pa, pb = np.asarray(y_true), np.asarray(pred_a), np.asarray(pred_b)
+    ca, cb = (pa == yt), (pb == yt)
+    b = int(np.sum(ca & ~cb))   # a correct, b wrong
+    c = int(np.sum(~ca & cb))   # a wrong, b correct
+    stat = (abs(b - c) - 1) ** 2 / (b + c) if (b + c) > 0 else 0.0
+    return b, c, float(stat), float(_chi2.sf(stat, 1))
+
+
+def _metrics(name, y_true, y_pred):
+    from sklearn.metrics import accuracy_score, f1_score
+    acc = float(accuracy_score(y_true, y_pred))
+    lo, hi = _wilson_ci(acc, len(y_true))
+    return {"model": name, "accuracy": round(acc, 4),
+            "acc_ci95": [round(lo, 4), round(hi, 4)],
+            "macro_f1": round(float(f1_score(y_true, y_pred, average="macro")), 4),
+            "n_test": len(y_true)}
+
+
+def _tune_C_on_dev(make_model, Xtr, ytr, Xdev, ydev, grid):
+    """Fit make_model(C) on TRAIN, pick the C with best DEV accuracy (no test peeking)."""
+    from sklearn.metrics import accuracy_score
+    best_C, best_acc = grid[0], -1.0
+    for C in grid:
+        m = make_model(C); m.fit(Xtr, ytr)
+        a = accuracy_score(ydev, m.predict(Xdev))
+        if a > best_acc:
+            best_acc, best_C = a, C
+    return best_C, best_acc
+
+
+def benchmark_tfidf_linear(kind, tr_texts, ytr, dev_texts, ydev, te_texts, yte):
+    """IMDB-only tuned TF-IDF linear model. kind in {'logreg','linsvc'}.
+    Levers vs the OLD pipeline: max_features=50000 (was 10000) and NO stopwords (was 'english')."""
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.svm import LinearSVC
+    vec = TfidfVectorizer(max_features=50000, ngram_range=(1, 2), min_df=3,
+                          sublinear_tf=True, stop_words=None, strip_accents="unicode")
+    Xtr = vec.fit_transform(tr_texts); Xdev = vec.transform(dev_texts); Xte = vec.transform(te_texts)
+    if kind == "logreg":
+        make = lambda C: LogisticRegression(C=C, max_iter=1000, solver="liblinear")
+        name = "IMDB-only TF-IDF LogisticRegression (tuned, 50k feats, no stopwords)"
+    else:
+        make = lambda C: LinearSVC(C=C, max_iter=4000)
+        name = "IMDB-only TF-IDF LinearSVC (tuned, 50k feats, no stopwords)"
+    bestC, devacc = _tune_C_on_dev(make, Xtr, ytr, Xdev, ydev, _C_GRID)
+    final = make(bestC); final.fit(Xtr, ytr)
+    pred = final.predict(Xte)
+    m = _metrics(name, yte, pred)
+    m.update({"tuned_C": bestC, "dev_acc": round(devacc, 4), "n_features": Xtr.shape[1]})
+    return m, pred
+
+
+def benchmark_nbsvm(tr_texts, ytr, dev_texts, ydev, te_texts, yte, beta=0.25, use_interpolation=False):
+    """Faithful NBSVM (Wang & Manning 2012), IMDB-only: binarized bigrams, NO stopword removal,
+    punctuation kept (token_pattern=[^\\s]+); NB log-count-ratio r from TRAIN counts only,
+    applied to test; LinearSVC on r-weighted features. (beta interpolation optional, off by default.)"""
+    import numpy as np
+    from sklearn.feature_extraction.text import CountVectorizer
+    from sklearn.svm import LinearSVC
+    from sklearn.metrics import accuracy_score
+    vec = CountVectorizer(binary=True, ngram_range=(1, 2), lowercase=True,
+                          token_pattern=r"[^\s]+", min_df=5)
+    Xtr = vec.fit_transform(tr_texts); Xdev = vec.transform(dev_texts); Xte = vec.transform(te_texts)
+    y = np.asarray(ytr)
+    p = 1.0 + np.asarray(Xtr[y == 1].sum(axis=0)).ravel()   # smoothed positive feature counts (TRAIN only)
+    q = 1.0 + np.asarray(Xtr[y == 0].sum(axis=0)).ravel()   # smoothed negative feature counts (TRAIN only)
+    r = np.log((p / p.sum()) / (q / q.sum())).reshape(1, -1)
+    nb = lambda X: X.multiply(r).tocsr()                    # binarized presence * r
+    Xtr_nb, Xdev_nb, Xte_nb = nb(Xtr), nb(Xdev), nb(Xte)
+    devacc, bestC_val = -1.0, 1.0
+    for C in [0.5, 1.0, 5.0]:
+        s = LinearSVC(C=C, max_iter=4000); s.fit(Xtr_nb, y)
+        a = accuracy_score(ydev, s.predict(Xdev_nb))
+        if a > devacc:
+            devacc, bestC_val = a, C
+    svm = LinearSVC(C=bestC_val, max_iter=4000); svm.fit(Xtr_nb, y)
+    pred = svm.predict(Xte_nb)
+    name = "IMDB-only NBSVM (faithful: binarized bigrams, no stopwords, r from train; LinearSVC)"
+    m = _metrics(name, yte, pred)
+    m.update({"tuned_C": bestC_val, "dev_acc": round(devacc, 4), "n_features": Xtr.shape[1],
+              "beta_interpolation": (beta if use_interpolation else None)})
+    return m, pred
+
+
+def run_imdb_only_benchmark():
+    """Train + evaluate the IMDB-only BENCHMARK models on IMDB TEST once. Saves JSON. REFERENCE only.
+    These are NOT the deployed app models (that is 7.7); the app .pkl contract is untouched here."""
+    import json
+    import time
+    print("=== 7.6 IMDB-only BENCHMARK (reference numbers; NOT deployed) ===")
+    t0 = time.time()
+    tr_texts, ytr = load_imdb_only_train()
+    dev_texts, ydev = load_imdb_dev()
+    te_texts, yte = data_split.load_texts(data_split.get_split()["test"])
+    print(f"train {len(ytr)} / dev {len(ydev)} / test {len(yte)} (raw text; no _preprocess_text)")
+    results, preds = [], {}
+    for kind in ("logreg", "linsvc"):
+        m, pred = benchmark_tfidf_linear(kind, tr_texts, ytr, dev_texts, ydev, te_texts, yte)
+        results.append(m); preds[m["model"]] = pred
+        print(f"  {m['accuracy']}  CI{m['acc_ci95']}  F1 {m['macro_f1']}  C={m['tuned_C']}  | {m['model']}")
+    m, pred = benchmark_nbsvm(tr_texts, ytr, dev_texts, ydev, te_texts, yte)
+    results.append(m); preds[m["model"]] = pred
+    print(f"  {m['accuracy']}  CI{m['acc_ci95']}  F1 {m['macro_f1']}  C={m['tuned_C']}  | {m['model']}")
+    comparisons = []
+    ordered = sorted(results, key=lambda r: r["accuracy"])  # McNemar each vs the next-best below it
+    for i in range(1, len(ordered)):
+        a, b = ordered[i - 1]["model"], ordered[i]["model"]
+        bb, cc, chi2, pval = _mcnemar(yte, preds[a], preds[b])
+        comparisons.append({"comparison": f"{b}  vs  {a}", "b_only_correct": cc, "a_only_correct": bb,
+                            "chi2": round(chi2, 2), "p_value": float(f"{pval:.3g}"),
+                            "b_significantly_better": bool(pval < 0.05 and cc > bb)})
+    best = max(results, key=lambda r: r["accuracy"])
+    out = {"track": "IMDB-only benchmark (reference, NOT deployed)", "test_n": len(yte),
+           "frontier_target": "~88-91% (Wang & Manning 2012 NBSVM ~91.2%)",
+           "models": results, "mcnemar": comparisons,
+           "best_model": best["model"], "best_accuracy": best["accuracy"],
+           "best_acc_ci95": best["acc_ci95"], "runtime_sec": round(time.time() - t0, 1)}
+    os.makedirs(os.path.dirname(BENCHMARK_PATH), exist_ok=True)
+    with open(BENCHMARK_PATH, "w") as f:
+        json.dump(out, f, indent=2)
+    print(f"BEST IMDB-only: {best['accuracy']} (CI {best['acc_ci95']}) -> {best['model']}")
+    print(f"Saved -> {BENCHMARK_PATH}  | runtime {out['runtime_sec']}s")
+    return out
+
+
 if __name__ == "__main__":
-    print("=== SenseCatch retrain.py — 7.5 corpus foundation (no training) ===")
+    if "--imdb-benchmark" in sys.argv:
+        run_imdb_only_benchmark()
+        sys.exit(0)
+    print("=== SenseCatch retrain.py - corpus foundation (no training) ===")
     corpus = load_training_corpus()
     npos = sum(corpus["labels"])
     print(f"GENERAL training corpus: {corpus['n']} docs ({npos} pos / {corpus['n'] - npos} neg)")
@@ -145,3 +298,4 @@ if __name__ == "__main__":
     print(f"DEV (held-out, for tuning): {len(dev_l)} ({sum(dev_l)} pos / {len(dev_l) - sum(dev_l)} neg)")
     print("TEST split is NOT loaded here (touched once, at final eval).")
     print("NO Twitter. Preprocessing = ensemble._preprocess_text (cached, train==serve).")
+
