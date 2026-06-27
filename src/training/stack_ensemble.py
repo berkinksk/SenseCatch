@@ -147,9 +147,18 @@ def load_stack(path=STACK_PATH):
         return pickle.load(f)
 
 
+_SERVE = {}
+
+
+def _load_serve(stack_path):
+    """Load and cache the stack and the base ensemble for serving."""
+    if stack_path not in _SERVE:
+        _SERVE[stack_path] = (load_stack(stack_path), ev.load_ensemble())
+    return _SERVE[stack_path]
+
+
 def predict_proba(texts, stack_path=STACK_PATH, distilbert_dir=None):
-    stack = load_stack(stack_path)
-    ensemble = ev.load_ensemble()
+    stack, ensemble = _load_serve(stack_path)
     P = base_ppos(ensemble, texts, distilbert_dir)
     return stack["clf"].predict_proba(P[:, stack["cols"]])
 
