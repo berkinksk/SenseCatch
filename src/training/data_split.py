@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Canonical seeded data split for SenseCatch (Step 7.2).
+Seeded train/dev/test split for SenseCatch.
 
 Provides ONE fixed train/dev/test split so every tuning decision
 (model choice, hyperparameters, ensemble weights, gate threshold,
@@ -8,7 +8,7 @@ calibration) is made on DEV, and the IMDB official TEST set is touched
 only once, for final reporting.
 
   - IMDB official split: train/ (25k) and test/ (25k) are kept separate.
-  - DEV is carved from IMDB train/ (seeded, stratified) — default 10%.
+  - DEV is carved from IMDB train/ (seeded, stratified), 10% by default.
   - A manifest (sizes + a hash of each split's file ids) is saved for
     reproducibility and as a no-leakage proof artifact.
 
