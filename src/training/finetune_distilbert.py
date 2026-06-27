@@ -118,14 +118,25 @@ def finetune(output_dir=OUTPUT_DIR, epochs=2, lr=2e-5, train_batch=16, smoke=Fal
     return output_dir, best_acc
 
 
+_LOADED = {}
+
+
+def _load_model(model_dir):
+    """Load and cache the tokenizer, model, and device for a directory."""
+    if model_dir not in _LOADED:
+        from transformers import AutoTokenizer, AutoModelForSequenceClassification
+        device = pick_device()
+        tok = AutoTokenizer.from_pretrained(model_dir)
+        model = AutoModelForSequenceClassification.from_pretrained(model_dir).to(device)
+        model.eval()
+        _LOADED[model_dir] = (tok, model, device)
+    return _LOADED[model_dir]
+
+
 def predict_proba(texts, batch_size=64, model_dir=OUTPUT_DIR):
     """Return an array of [p_neg, p_pos] for each text."""
     import torch
-    from transformers import AutoTokenizer, AutoModelForSequenceClassification
-    device = pick_device()
-    tok = AutoTokenizer.from_pretrained(model_dir)
-    model = AutoModelForSequenceClassification.from_pretrained(model_dir).to(device)
-    model.eval()
+    tok, model, device = _load_model(model_dir)
     out = []
     with torch.no_grad():
         for i in range(0, len(texts), batch_size):
