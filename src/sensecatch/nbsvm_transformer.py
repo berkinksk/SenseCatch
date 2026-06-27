@@ -1,4 +1,4 @@
-"""NB log-count-ratio transformer for the deployed NBSVM model (Step 7.7).
+"""NB log-count-ratio transformer for the deployed NBSVM model.
 
 Lives in src/sensecatch/ so the app can import it when unpickling models/nbsvm.pkl
 (the deployed NBSVM's text "vectorizer" is a Pipeline: binary CountVectorizer -> this).
