@@ -123,7 +123,7 @@ def analyze():
         # Get data from request
         data = request.get_json()
         text = data.get('text', '')
-        # Valid model values: naive_bayes, logistic_regression, linear_svc, nbsvm
+        # Valid model values: naive_bayes, logistic_regression, linear_svc, nbsvm, distilbert, stack
         model_type = data.get('model', 'naive_bayes')  # Default to naive_bayes
         
         logger.info(f"Analyzing text: '{text}' with model: {model_type}")
