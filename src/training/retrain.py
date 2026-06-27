@@ -1,30 +1,17 @@
 #!/usr/bin/env python3
-"""
-Clean retraining module for SenseCatch — Step 7 (branch: evaluation-upgrade).
+"""Train and benchmark the SenseCatch sentiment models.
 
-Replaces the messy src/training/train_models.py for the Step-7 retrain
-(train_models.py stays as historical; the Mar-2025 models are backed up).
+Trains the four deployed models (Naive Bayes, Logistic Regression, LinearSVC,
+NBSVM) on the NLTK movie reviews plus the IMDB training split. Can also train
+IMDB-only models used as benchmark references. Tuning uses a held-out dev set;
+the IMDB test set is only touched for final scoring. Preprocessing reuses the
+serving path so training matches serving.
 
-Status:
-  7.5 (THIS commit) — corpus-loading FOUNDATION only:
-    * GENERAL training corpus = NLTK movie_reviews (all) + IMDB-train (the
-      seeded 'train' split = 22,500 from data_split.py). NO Twitter (dead
-      source).
-    * 'dev' (2,500) is reserved for tuning; 'test' (25,000) is NEVER
-      touched here (touched once, at final eval).
-    * Preprocessing uses the SERVING path (ensemble._preprocess_text via
-      evaluate.preprocess_texts, which is cached) so train == serve.
-    * FAILS LOUDLY if any declared corpus is missing/empty (the old code
-      silently trained without a missing corpus — review C6).
-  7.6 (next) — IMDB-ONLY benchmark versions (LinearSVC + faithful NBSVM).
-  7.7 (next) — DEPLOYED GENERAL versions: NB, LR, LinearSVC, NBSVM — each
-      CalibratedClassifierCV(cv=5) on TRAIN, saved in the app-compatible
-      3-tuple format per the MODEL/FEATURE CONTRACT in project-plans.md.
-  7.8 — wire LinearSVC + NBSVM into the app + serving smoke test.
-  7.9 — training manifest.
-
-Run:
-    venv/bin/python src/training/retrain.py    # loads + reports corpus (no training)
+Usage:
+    python src/training/retrain.py                  # report the corpus
+    python src/training/retrain.py --imdb-benchmark # IMDB-only benchmark models
+    python src/training/retrain.py --train-deployed # the four deployed models
+    python src/training/retrain.py --manifest       # write the training manifest
 """
 import os
 import sys
@@ -39,7 +26,7 @@ import data_split  # noqa: E402  (src/training/data_split.py — the seeded spli
 
 
 class CorpusError(RuntimeError):
-    """A declared training corpus is missing or empty. Fail loudly — never silently skip."""
+    """Raised when a declared training corpus is missing or empty."""
 
 
 def load_nltk_movie_reviews():
@@ -59,7 +46,7 @@ def load_nltk_movie_reviews():
             f"Original: {e}"
         ) from e
     if not fileids:
-        raise CorpusError("NLTK 'movie_reviews' returned 0 fileids — corpus is empty.")
+        raise CorpusError("NLTK 'movie_reviews' returned 0 fileids; the corpus is empty.")
     texts, labels = [], []
     for cat in movie_reviews.categories():
         label = 1 if cat == "pos" else 0
@@ -76,7 +63,7 @@ def _require_imdb_dir():
         if not os.path.isdir(d) or not os.listdir(d):
             raise CorpusError(
                 f"IMDB training data missing/empty: {d}. "
-                "Expected datasets/aclImdb/train/{pos,neg}/ — download/extract the IMDB dataset."
+                "Expected datasets/aclImdb/train/{pos,neg}/. Download and extract the IMDB dataset."
             )
 
 
@@ -96,7 +83,7 @@ def load_imdb_dev():
 
 
 def load_imdb_only_train():
-    """IMDB-train ONLY -> (texts, labels). For the Step-7.6 benchmark track."""
+    """IMDB training split only, as (texts, labels). Used for the benchmark models."""
     return load_imdb_train()
 
 
@@ -123,10 +110,10 @@ def load_training_corpus():
 
 
 def preprocess(texts, ensemble=None):
-    """Preprocess via the SERVING path (ensemble._preprocess_text), cached (7.4), so train == serve.
+    """Preprocess texts with the serving path (ensemble._preprocess_text), cached on disk.
 
-    Reuses evaluate.preprocess_texts, sharing the on-disk cache with evaluation.
-    Heavy on a COLD cache (NLTK pos_tag/ne_chunk per text); 7.6 calls this once.
+    Reuses evaluate.preprocess_texts so training and evaluation share one cache.
+    Slow on a cold cache (NLTK pos_tag and ne_chunk run per text).
     """
     import evaluate as ev
     if ensemble is None:
@@ -134,12 +121,9 @@ def preprocess(texts, ensemble=None):
     return ev.preprocess_texts(ensemble, texts)
 
 
-# ----------------------------------------------------------------------------
-# 7.6 - IMDB-ONLY BENCHMARK track  (REFERENCE numbers only; NOT deployed).
-# Trained on IMDB-train only, tuned on the IMDB DEV set, evaluated on IMDB TEST
-# (25,000) ONCE. Standard/faithful per-method recipe on RAW text -> sklearn
-# vectorizers (NOT the app's heavy _preprocess_text), so it runs fast.
-# ----------------------------------------------------------------------------
+# IMDB-only benchmark models (reference numbers, not the deployed models).
+# Trained on the IMDB training split, tuned on the dev set, scored once on the
+# IMDB test set. Plain sklearn vectorizers on raw text, so it runs fast.
 BENCHMARK_PATH = os.path.join(PROJECT_ROOT, "artifacts", "benchmark_imdb_only.json")
 _C_GRID = [0.1, 1.0, 10.0]
 
@@ -248,7 +232,7 @@ def run_imdb_only_benchmark():
     These are NOT the deployed app models (that is 7.7); the app .pkl contract is untouched here."""
     import json
     import time
-    print("=== 7.6 IMDB-only BENCHMARK (reference numbers; NOT deployed) ===")
+    print("=== IMDB-only benchmark (reference numbers, not deployed) ===")
     t0 = time.time()
     tr_texts, ytr = load_imdb_only_train()
     dev_texts, ydev = load_imdb_dev()
@@ -284,24 +268,21 @@ def run_imdb_only_benchmark():
     return out
 
 
-# ----------------------------------------------------------------------------
-# 7.7 - FOUR DEPLOYED GENERAL models (the app dropdown). All CalibratedClassifierCV
-# (cv=5 on TRAIN -> predict_proba). Trained on the GENERAL corpus (NLTK+IMDB),
-# preprocessed via the SERVING path (ensemble._preprocess_text) so train==serve.
-# Saved app-compatible: 3-tuple (model, text_vectorizer, dict_vectorizer).
-# Serve-time dim handling aligns to model.n_features_in_ (ensemble_model.py ~1624
-# and evaluate.build_features), so each model may have its own feature dim.
-# NB/LR OVERWRITE the deployed pkls; LinearSVC/NBSVM are new (loader wiring = 7.8).
-# ----------------------------------------------------------------------------
+# The four deployed models shown in the app dropdown. Each is wrapped in
+# CalibratedClassifierCV (cv=5) so it can output probabilities. Trained on the
+# NLTK plus IMDB corpus with the serving preprocessing. Saved as a 3-tuple
+# (model, text_vectorizer, dict_vectorizer) that the app loads.
 MODELS_DIR = os.path.join(PROJECT_ROOT, "models")
 DEPLOY_BACKUP = os.path.join(PROJECT_ROOT, "artifacts", "models_backup_pre-step7-deploy")
 DEPLOY_RESULTS = os.path.join(PROJECT_ROOT, "artifacts", "deploy_results.json")
-_FOOTGUN_FILES = ("count_vectorizer.pkl", "tfidf_vectorizer.pkl", "dict_vectorizer.pkl",
-                  "feature_dimensions.pkl", "feature_info.txt")
+_STALE_VECTORIZER_FILES = (
+    "count_vectorizer.pkl", "tfidf_vectorizer.pkl", "dict_vectorizer.pkl",
+    "feature_dimensions.pkl", "feature_info.txt",
+)
 
 
 def backup_current_models():
-    """Back up EVERY current models/*.pkl and *.txt to DEPLOY_BACKUP with SHA-256 (footgun-safe)."""
+    """Copy the current model files to the backup folder, with their SHA-256 hashes."""
     import shutil, hashlib, glob, json
     os.makedirs(DEPLOY_BACKUP, exist_ok=True)
     hashes = {}
@@ -315,10 +296,11 @@ def backup_current_models():
     return DEPLOY_BACKUP, hashes
 
 
-def _remove_footgun_files():
-    """CONTRACT footgun: separate vectorizer/dim pkls OVERRIDE the tuple's vectorizers. Remove any present."""
+def _remove_stale_vectorizer_files():
+    """Remove old standalone vectorizer files if present. They would override the
+    vectorizers saved with each model and cause silent feature-size mismatches."""
     removed = []
-    for name in _FOOTGUN_FILES:
+    for name in _STALE_VECTORIZER_FILES:
         p = os.path.join(MODELS_DIR, name)
         if os.path.exists(p):
             os.remove(p); removed.append(name)
@@ -418,26 +400,25 @@ def train_deployed_models(n_sample=None):
         if a > best_acc:
             best_acc, best_w = a, w
 
-    removed = _remove_footgun_files()
+    removed = _remove_stale_vectorizer_files()
     out = {"track": "deployed general (4 calibrated models)", "dry_run": bool(n_sample),
            "n_train": int(len(ytr)), "n_dev": int(len(ydev)), "models": results,
            "ensemble_weights": {"naive_bayes": best_w, "logistic_regression": round(1 - best_w, 2)},
            "ensemble_dev_acc": round(best_acc, 4), "backup_dir": DEPLOY_BACKUP,
-           "footgun_files_removed": removed, "runtime_sec": round(time.time() - t0, 1)}
+           "stale_files_removed": removed, "runtime_sec": round(time.time() - t0, 1)}
     os.makedirs(os.path.dirname(DEPLOY_RESULTS), exist_ok=True)
     with open(DEPLOY_RESULTS, "w") as f:
         json.dump(out, f, indent=2)
     print(f"[deploy] ensemble weights (dev-tuned): NB {best_w} / LR {round(1-best_w,2)} (dev acc {best_acc:.4f})")
-    print(f"[deploy] saved 4 models; footgun files removed: {removed or 'none'}; "
+    print(f"[deploy] saved 4 models; stale vectorizer files removed: {removed or 'none'}; "
           f"results -> {DEPLOY_RESULTS}; runtime {out['runtime_sec']}s")
     return out
 
 
 def write_training_manifest(path=None):
-    """Step 7.9 - PROVENANCE manifest for the 4 already-trained deployed models.
-    Reads existing artifacts (deploy_results.json + data_split_manifest.json) and
-    the models/*.pkl on disk. Does NOT retrain and does NOT reload NLTK.
-    Writes artifacts/training_manifest.json (json indent=2)."""
+    """Write a manifest describing how the four deployed models were trained.
+    Reads the existing result files and hashes the model files. Does not retrain.
+    Output: artifacts/training_manifest.json."""
     import json, hashlib, sys
     from datetime import datetime
     from importlib.metadata import version as _ver
@@ -516,7 +497,7 @@ def write_training_manifest(path=None):
         "models": models,
         "ensemble_weights": deploy.get("ensemble_weights"),
         "ensemble_dev_acc": deploy.get("ensemble_dev_acc"),
-        "notes": "DEV accuracies are on the held-out IMDB dev set, not the final TEST set (Step 8 confirms on TEST).",
+        "notes": "DEV accuracies are on the held-out IMDB dev set, not the final test set.",
     }
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
