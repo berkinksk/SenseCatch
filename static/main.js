@@ -204,6 +204,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 return 'Naive Bayes';
             case 'logistic_regression':
                 return 'Logistic Regression';
+            case 'linear_svc':
+                return 'Linear SVC';
+            case 'nbsvm':
+                return 'NBSVM';
             default:
                 return modelKey;
         }
