@@ -43,6 +43,17 @@ except ImportError:
     def ne_chunk(tagged_tokens):
         return tagged_tokens
 
+# Register NBLogCountRatio at import time so pickle can rebuild models/nbsvm.pkl
+# (its text "vectorizer" is a Pipeline(CountVectorizer -> NBLogCountRatio)).
+try:
+    try:
+        from src.sensecatch.nbsvm_transformer import NBLogCountRatio
+    except Exception:
+        from nbsvm_transformer import NBLogCountRatio
+except Exception as _e:
+    logger.error(f"Could not import NBLogCountRatio (models/nbsvm.pkl may fail to load): {_e}")
+    NBLogCountRatio = None
+
 class SentimentEnsemble:
     """Ensemble model that combines multiple sentiment classifiers"""
     
@@ -218,7 +229,9 @@ class SentimentEnsemble:
         """Load all available models from the models directory"""
         model_paths = {
             'naive_bayes': 'models/naive_bayes.pkl',
-            'logistic_regression': 'models/logistic_regression.pkl'
+            'logistic_regression': 'models/logistic_regression.pkl',
+            'linear_svc': 'models/linear_svc.pkl',
+            'nbsvm': 'models/nbsvm.pkl'
         }
         
         # Try to load individual vectorizers first if they exist
