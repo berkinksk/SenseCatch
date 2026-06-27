@@ -1,0 +1,4 @@
+# Dependencies for evaluation and benchmarking. Not needed to run the app.
+datasets==5.0.0
+transformers==5.2.0
+torch==2.10.0
