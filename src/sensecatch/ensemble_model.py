@@ -5,6 +5,7 @@ Combines multiple sentiment models for improved accuracy
 import numpy as np
 import pickle
 import os
+import sys
 import traceback
 import logging
 import re
@@ -1724,6 +1725,41 @@ class SentimentEnsemble:
         # Not deemed explicitly neutral
         return False, 0.0
 
+    def _predict_external_model(self, text, model_name):
+        """Serve DistilBERT or the stacked ensemble directly, with no rule layer."""
+        try:
+            here = os.path.dirname(os.path.abspath(__file__))
+            root = os.path.dirname(os.path.dirname(here))
+            for p in (os.path.join(root, "src", "training"), root):
+                if p not in sys.path:
+                    sys.path.insert(0, p)
+            if model_name == "distilbert":
+                import finetune_distilbert as fd
+                probs = fd.predict_proba([text])[0]
+            else:
+                import stack_ensemble as se
+                probs = se.predict_proba([text])[0]
+            p_pos = float(probs[1])
+            if p_pos >= 0.5:
+                sentiment, confidence = "Positive", p_pos * 100
+            else:
+                sentiment, confidence = "Negative", (1 - p_pos) * 100
+            return {
+                "text": text,
+                "sentiment": sentiment,
+                "confidence": confidence,
+                "model_used": model_name,
+            }
+        except Exception as e:
+            logger.error(f"Error serving {model_name}: {str(e)}")
+            logger.exception(e)
+            return {
+                "text": text,
+                "sentiment": "Neutral",
+                "confidence": 50.0,
+                "model_used": f"{model_name}_error",
+            }
+
     def predict(self, text, modelname=None, specific_model=None, use_sarcasm_detection=True, use_idiom_detection=True, use_contradiction_detection=True):
         """
         Make predictions on a single text input.
@@ -1735,6 +1771,10 @@ class SentimentEnsemble:
         prediction_result = {}
         text = str(text)
         
+        # DistilBERT and the stacked ensemble are binary models served without the rule layer.
+        if modelname in ("distilbert", "stack"):
+            return self._predict_external_model(text, modelname)
+
         # First check if this is a simple case - MOVED TO TOP PRIORITY
         simple_case_result = self._handle_simple_cases(text)
         if simple_case_result:
