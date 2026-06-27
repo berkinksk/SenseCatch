@@ -208,6 +208,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 return 'Linear SVC';
             case 'nbsvm':
                 return 'NBSVM';
+            case 'distilbert':
+                return 'DistilBERT (fine-tuned)';
+            case 'stack':
+                return 'Stacked Ensemble';
             default:
                 return modelKey;
         }
