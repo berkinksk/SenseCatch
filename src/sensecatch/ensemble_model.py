@@ -43,8 +43,7 @@ except ImportError:
     def ne_chunk(tagged_tokens):
         return tagged_tokens
 
-# Register NBLogCountRatio at import time so pickle can rebuild models/nbsvm.pkl
-# (its text "vectorizer" is a Pipeline(CountVectorizer -> NBLogCountRatio)).
+# Imported so pickle can load models/nbsvm.pkl, which uses NBLogCountRatio.
 try:
     try:
         from src.sensecatch.nbsvm_transformer import NBLogCountRatio
