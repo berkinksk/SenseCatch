@@ -90,10 +90,10 @@ def download_imdb():
 def load_imdb_test(max_per_class=None, seed=42):
     """Load the IMDB test split. Returns (texts, labels) where labels are 0/1.
 
-    When max_per_class is set (quick mode), draw a SEEDED, class-balanced
-    RANDOM sample per class — NOT the first-N-sorted slice, which Step 6.4
-    showed was ~2-4 pp optimistically biased. A random sample is an
-    unbiased preview of the full test set, and stays reproducible.
+    When max_per_class is set (quick mode), draw a seeded, class-balanced
+    random sample per class, not the first-N-sorted slice. The sorted slice
+    was about 2 to 4 points optimistic; a random sample is an unbiased,
+    reproducible preview of the full test set.
     """
     texts, labels = [], []
     rng = random.Random(seed)
@@ -165,7 +165,7 @@ def preprocess_texts(ensemble, texts):
     Caches the preprocessed TEXT to disk (model-independent) keyed by a hash of
     (PREPROCESS_VERSION + the input texts). The NLTK pos_tag/ne_chunk pass
     dominates runtime (~0.1s/review -> ~41 min on 25K), so a warm run skips it.
-    Feature matrices are deliberately NOT cached — they change on every retrain.
+    Feature matrices are deliberately not cached; they change on every retrain.
     """
     import hashlib
 
@@ -332,7 +332,7 @@ def evaluate_full_system(ensemble, texts, labels):
         elif sent == "Negative":
             preds.append(0)
         else:
-            # Neutral on binary data — count as incorrect
+            # Neutral on binary data, so count it as incorrect
             preds.append(1 - labels[i])
             neutral_count += 1
 
@@ -400,7 +400,7 @@ def evaluate_distilbert(texts, labels):
 def print_ablation_table(rows, distilbert_metrics=None):
     """Print formatted ablation study summary."""
     print(f"\n{'=' * 62}")
-    print(f"  ABLATION STUDY — IMDB Test Set")
+    print(f"  ABLATION STUDY: IMDB Test Set")
     print(f"{'=' * 62}")
     print(f"  {'Component':<42} {'Acc':>7}  {'F1':>7}")
     print(f"  {'-' * 42} {'-' * 7}  {'-' * 7}")
@@ -452,7 +452,7 @@ def main():
     max_per_class = 1000 if args.quick else None
     total_samples = (max_per_class * 2) if max_per_class else 25000
 
-    print(f"\n SenseCatch Evaluation — IMDB Test Set ({total_samples:,} reviews)")
+    print(f"\n SenseCatch Evaluation: IMDB Test Set ({total_samples:,} reviews)")
     print("=" * 62)
 
     # --- Load data --------------------------------------------------------
