@@ -433,6 +433,98 @@ def train_deployed_models(n_sample=None):
     return out
 
 
+def write_training_manifest(path=None):
+    """Step 7.9 - PROVENANCE manifest for the 4 already-trained deployed models.
+    Reads existing artifacts (deploy_results.json + data_split_manifest.json) and
+    the models/*.pkl on disk. Does NOT retrain and does NOT reload NLTK.
+    Writes artifacts/training_manifest.json (json indent=2)."""
+    import json, hashlib, sys
+    from datetime import datetime
+    from importlib.metadata import version as _ver
+
+    path = path or os.path.join(PROJECT_ROOT, "artifacts", "training_manifest.json")
+    deploy = json.load(open(DEPLOY_RESULTS))
+    split = json.load(open(os.path.join(PROJECT_ROOT, "artifacts", "data_split_manifest.json")))
+
+    try:
+        import evaluate as _ev
+        preprocess_version = getattr(_ev, "PREPROCESS_VERSION", "v1")
+    except Exception:
+        preprocess_version = "v1"
+
+    def _sha256(fp):
+        h = hashlib.sha256()
+        with open(fp, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    def _v(pkg):
+        try:
+            return _ver(pkg)
+        except Exception:
+            return "unknown"
+
+    imdb_train = split["splits"]["train"]["n"]      # 22500 (seeded IMDB-train split)
+    train_total = deploy["n_train"]                 # 24500 = NLTK + IMDB-train
+
+    recipes = {
+        "naive_bayes": "CountVectorizer(max_features=30000, ngram(1,2), min_df=2, no stopwords) + lexicon DictVectorizer(9) -> MultinomialNB(alpha=0.1), CalibratedClassifierCV(cv=5)",
+        "logistic_regression": "TfidfVectorizer(max_features=30000, ngram(1,2), min_df=2, sublinear_tf, no stopwords) + lexicon DictVectorizer(9) -> LogisticRegression(C=10.0, liblinear), CalibratedClassifierCV(cv=5)",
+        "linear_svc": "TfidfVectorizer(max_features=30000, ngram(1,2), min_df=2, sublinear_tf, no stopwords) + lexicon DictVectorizer(9) -> LinearSVC(C=1.0), CalibratedClassifierCV(cv=5)",
+        "nbsvm": "Pipeline(CountVectorizer(binary, ngram(1,2), token=non-whitespace runs, min_df=5) -> NBLogCountRatio) + lexicon DictVectorizer(9) -> LinearSVC(C=0.5), CalibratedClassifierCV(cv=5)",
+    }
+
+    models = {}
+    for name, info in deploy["models"].items():
+        fp = os.path.join(MODELS_DIR, info["file"])
+        models[name] = {
+            "file": "models/" + info["file"],
+            "sha256": _sha256(fp) if os.path.exists(fp) else "missing",
+            "n_features": info["n_features"],
+            "dev_accuracy": info["dev_accuracy"],
+            "recipe": recipes.get(name, ""),
+        }
+
+    manifest = {
+        "generated_at": datetime.now().isoformat(),
+        "seed": 42,
+        "dev_fraction": 0.10,
+        "preprocess_version": preprocess_version,
+        "corpus": {
+            "train_total": train_total,
+            "dev_total": deploy["n_dev"],
+            "sources": {
+                "nltk_movie_reviews": train_total - imdb_train,
+                "imdb_train": imdb_train,
+            },
+            "balance": "50/50 pos/neg",
+            "twitter": False,
+        },
+        "data_split": {
+            "seed": split["seed"],
+            "dev_fraction": split["dev_fraction"],
+            "splits": split["splits"],
+        },
+        "library_versions": {
+            "python": sys.version.split()[0],
+            "scikit-learn": _v("scikit-learn"),
+            "numpy": _v("numpy"),
+            "scipy": _v("scipy"),
+            "nltk": _v("nltk"),
+        },
+        "models": models,
+        "ensemble_weights": deploy.get("ensemble_weights"),
+        "ensemble_dev_acc": deploy.get("ensemble_dev_acc"),
+        "notes": "DEV accuracies are on the held-out IMDB dev set, not the final TEST set (Step 8 confirms on TEST).",
+    }
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(manifest, f, indent=2)
+    print(f"[manifest] wrote {path}")
+    return manifest
+
+
 if __name__ == "__main__":
     if "--imdb-benchmark" in sys.argv:
         run_imdb_only_benchmark(); sys.exit(0)
@@ -440,6 +532,8 @@ if __name__ == "__main__":
         print("DRY-RUN:", train_deployed_models(n_sample=300)); sys.exit(0)
     if "--train-deployed" in sys.argv:
         print("DEPLOY:", train_deployed_models()); sys.exit(0)
+    if "--manifest" in sys.argv:
+        write_training_manifest(); sys.exit(0)
     print("=== SenseCatch retrain.py - corpus foundation (no training) ===")
     corpus = load_training_corpus()
     npos = sum(corpus["labels"])
