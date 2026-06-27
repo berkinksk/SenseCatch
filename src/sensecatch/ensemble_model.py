@@ -87,8 +87,8 @@ class SentimentEnsemble:
         self.dict_vectorizers = {}
         self.feature_dimensions = self._load_feature_dimensions()
         self.model_weights = {
-            'naive_bayes': 0.6,
-            'logistic_regression': 0.4,
+            'naive_bayes': 0.3,
+            'logistic_regression': 0.7,
         }
         # Add common movie title list for entity recognition
         self.movie_titles = self._load_movie_titles()
