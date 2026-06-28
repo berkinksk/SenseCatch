@@ -1815,7 +1815,9 @@ class SentimentEnsemble:
         
         # All model options serve raw predictions. "rule_based" runs the full rule system.
         if modelname == "rule_based":
-            modelname = None
+            result = self.predict(text)
+            result["model_used"] = "rule_based"
+            return result
         elif modelname in RAW_MODELS:
             if modelname in ("distilbert", "stack"):
                 return self._predict_external_model(text, modelname)
