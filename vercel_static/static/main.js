@@ -208,6 +208,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 return 'DistilBERT (fine-tuned)';
             case 'stack':
                 return 'Stacked Ensemble';
+            case 'rule_based':
+                return 'Rule-based (linguistic)';
             default:
                 return modelKey;
         }
