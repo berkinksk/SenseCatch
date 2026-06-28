@@ -1,7 +1,8 @@
-"""Zero-shot sentiment baseline with bart-large-mnli on the seeded IMDB sample.
+"""Zero-shot sentiment baselines on the seeded IMDB sample.
 
-Classifies each review as positive or negative with no task training, as a
-comparison point for the fine-tuned models. Saves artifacts/zero_shot_baseline.json.
+Runs each zero-shot model on the same 2,000-review IMDB sample and saves accuracy
+plus a Wilson 95% CI, as comparison points for the fine-tuned models.
+Saves artifacts/zero_shot_baseline.json.
 """
 import os
 import sys
@@ -16,6 +17,12 @@ for _p in (PROJECT_ROOT, THIS_DIR):
 
 import evaluate as ev
 
+# Same architecture as our fine-tuned model first, then a larger zero-shot model.
+MODELS = [
+    ("typeform/distilbert-base-uncased-mnli", "distilbert-mnli (same architecture)"),
+    ("facebook/bart-large-mnli", "bart-large-mnli (407M)"),
+]
+
 
 def wilson_ci(acc, n, z=1.96):
     if n == 0:
@@ -26,39 +33,42 @@ def wilson_ci(acc, n, z=1.96):
     return [round(center - half, 4), round(center + half, 4)]
 
 
-def main():
-    import torch
+def measure(model_id, texts, labels, device):
     from transformers import pipeline
-    texts, labels = ev.load_imdb_test(max_per_class=1000, seed=42)
-    labels = [int(x) for x in labels]
-    n = len(texts)
-    device = "mps" if torch.backends.mps.is_available() else "cpu"
-    print(f"zero-shot bart-large-mnli on {n} reviews, device {device}", flush=True)
-
-    clf = pipeline("zero-shot-classification", model="facebook/bart-large-mnli", device=device)
+    clf = pipeline("zero-shot-classification", model=model_id, device=device)
     candidate = ["positive", "negative"]
-    # Cap length to stay within bart's context and avoid tokenizer overflow.
     capped = [t[:4000] for t in texts]
-
     preds = []
     chunk = 100
-    for i in range(0, n, chunk):
+    for i in range(0, len(texts), chunk):
         out = clf(capped[i:i + chunk], candidate_labels=candidate, batch_size=16)
         if isinstance(out, dict):
             out = [out]
         for o in out:
             preds.append(1 if o["labels"][0] == "positive" else 0)
-        print(f"  {min(i + chunk, n)}/{n}", flush=True)
+        print(f"  {min(i + chunk, len(texts))}/{len(texts)}", flush=True)
+    acc = sum(int(p == l) for p, l in zip(preds, labels)) / len(labels)
+    return {"accuracy": round(acc, 4), "ci": wilson_ci(acc, len(labels)), "n": len(labels)}
 
-    acc = sum(int(p == l) for p, l in zip(preds, labels)) / n
-    ci = wilson_ci(acc, n)
-    result = {"model": "facebook/bart-large-mnli", "n": n, "accuracy": round(acc, 4),
-              "ci": ci, "sample": "imdb seeded sample, max_per_class=1000, seed=42"}
+
+def main():
+    import torch
+    texts, labels = ev.load_imdb_test(max_per_class=1000, seed=42)
+    labels = [int(x) for x in labels]
+    device = "mps" if torch.backends.mps.is_available() else "cpu"
     out_path = os.path.join(PROJECT_ROOT, "artifacts", "zero_shot_baseline.json")
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(result, f, indent=2)
-    print(f"RESULT zero-shot accuracy {acc:.4f} CI {ci} (n={n}, device {device})")
+
+    results = {"sample": "imdb seeded sample, max_per_class=1000, seed=42",
+               "device": device, "models": {}}
+    for model_id, label in MODELS:
+        print(f"=== {label} ({model_id}) on {len(texts)} reviews, device {device} ===", flush=True)
+        r = measure(model_id, texts, labels, device)
+        r["label"] = label
+        results["models"][model_id] = r
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(results, f, indent=2)
+        print(f"RESULT {label}: acc {r['accuracy']} CI {r['ci']} (n={r['n']})", flush=True)
     print(f"saved {out_path}")
 
 
