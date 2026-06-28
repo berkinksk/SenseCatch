@@ -2,9 +2,7 @@
 
 *Sentiment analysis with classical models, a fine-tuned DistilBERT, and a stacked ensemble, benchmarked on three datasets.*
 
-SenseCatch is a sentiment analysis web app that labels reviews as Positive or Negative. Live demo: [sensecatch.ai](https://sensecatch.ai).
-
-The aim is a small, interpretable system that runs cheaply on CPU, with each design choice checked against a fine-tuned transformer, a zero-shot model, and an ensemble.
+SenseCatch is a deployable sentiment web app (live at [sensecatch.ai](https://sensecatch.ai)) that labels reviews as Positive or Negative. The project builds small, interpretable models that run cheaply on CPU, and tests whether that is enough by benchmarking them against a fine-tuned DistilBERT, a zero-shot classifier, and a stacked ensemble.
 
 It has seven selectable models: four classical machine learning models, a DistilBERT transformer fine-tuned for this project, a stacked ensemble that combines them, and the original rule-based system. The stacked ensemble reaches **92.98% accuracy on the full IMDB test set** and is the most accurate of the seven. On IMDB its lead over every other model is statistically significant, not measurement noise.
 
@@ -34,11 +32,11 @@ The rework also added two stronger classical models, trained the same way:
 
 ### Benchmark across three datasets
 
-The table reports accuracy on three held-out test sets. IMDB (25,000 reviews) is in-domain, since the models are trained on IMDB. SST-2 (872) and Yelp (2,000) are different domains and measure generalization.
+The table reports accuracy on three held-out test sets. IMDB (25,000 reviews) [1] is in-domain, since the models are trained on IMDB. SST-2 (872) [2], from the GLUE benchmark [3], and Yelp (2,000) [4] are different domains and measure generalization.
 
 | Model | IMDB | SST-2 | Yelp |
 |---|---|---|---|
-| VADER (lexicon floor) | 70.0 | 66.2 | 72.0 |
+| VADER (lexicon floor) [5] | 70.0 | 66.2 | 72.0 |
 | NBSVM (best classical) | 90.8 | 79.1 | 86.0 |
 | DistilBERT (fine-tuned) | 91.2 | 84.4 | 91.3 |
 | **Stacked ensemble** | **93.0** | **85.7** | **92.0** |
@@ -52,7 +50,15 @@ One result worth calling out: the strongest classical models (Logistic Regressio
 
 ### Fine-tuning vs zero-shot
 
-A zero-shot bart-large-mnli (407M parameters, no task training) scores 87.7% on the 2,000-review IMDB sample. The fine-tuned DistilBERT (66M parameters) scores 89.6% on the same sample. So a model about six times smaller, fine-tuned on the task, beats the larger zero-shot model, and it is also faster on CPU and gives calibrated confidence. The gap is modest, so this is an efficiency point rather than a large accuracy win. (The 91.2% DistilBERT figure in the table is the full 25,000-review test set; the 89.6% here is the 2,000-review sample used for this comparison.)
+Two questions: does fine-tuning help, and is a small fine-tuned model worth more than a large off-the-shelf one. Both use the same 2,000-review IMDB sample. The zero-shot models classify by entailment [6], with no task-specific training.
+
+| Model | Size | Setup | Accuracy |
+|---|---|---|---|
+| DistilBERT, zero-shot (MNLI) | 66M | no task training | 71.8 |
+| bart-large-mnli, zero-shot | 407M | no task training | 87.7 |
+| DistilBERT, fine-tuned | 66M | fine-tuned on IMDB | 89.6 |
+
+Same architecture, fine-tuning lifts the 66M DistilBERT [7] from 71.8 to 89.6 (the value of fine-tuning). The fine-tuned 66M model also beats the 407M bart-large-mnli [8] (the value of a small, task-specific model), and it is faster on CPU and better calibrated. The 89.6 here is on the 2,000-review sample; the 91.2 in the main table is the full 25,000-review test set.
 
 ## Why the ensemble wins
 
@@ -72,9 +78,9 @@ Take the sentence "This movie was not bad at all." The raw classical models pred
 
 ## The seven models
 
-- **Naive Bayes, Logistic Regression, LinearSVC, NBSVM** are the four classical models. Each is calibrated, so its confidence scores mean something.
+- **Naive Bayes, Logistic Regression, LinearSVC, NBSVM [9]** are the four classical models. Each is calibrated, so a stated confidence is close to how often the model is actually right.
 - **DistilBERT (fine-tuned)** is a transformer fine-tuned on the IMDB training set.
-- **Stacked ensemble** is a logistic-regression meta-learner trained on the five base models' predictions. A learned combiner can match or beat its best member, and here it pairs the full-text classical models with the context-aware transformer. It is the most accurate option.
+- **Stacked ensemble** is a logistic-regression meta-learner [10] trained on the five base models' predictions. A learned combiner can match or beat its best member [11], and here it pairs the full-text classical models with the context-aware transformer. It is the most accurate option.
 - **Rule-based (optional)** is the original linguistic system (negation, sarcasm, idioms, contrast). It helps on specific cases like the negation example above, but on average it lowers accuracy on real reviews (the full rule system scores 70.8% on IMDB versus about 90% for the raw models). It is kept as a selectable comparison point and a record of the original approach, not a recommended default.
 
 At serve time the app runs the text through the selected model and returns the label, a confidence score, and the model name.
@@ -94,13 +100,13 @@ Rule-based looks fastest only because it short-circuits most inputs with early r
 
 The classical models are 20 to 100 times smaller than DistilBERT and are interpretable, but on CPU they are not faster, because the NLTK preprocessing dominates their latency. A GPU barely changes single-review latency (DistilBERT 20 to 13 ms) but roughly doubles batch throughput (82 to 186 reviews per second), which is why training and benchmarking used the GPU while serving stays on CPU.
 
-Confidence was checked on the 2,000-review held-out sample with Expected Calibration Error (lower is better). The calibrated classical models give trustworthy confidence (Logistic Regression 0.020, LinearSVC 0.021, NBSVM 0.021). DistilBERT is the most overconfident (0.032, raw softmax) and the stacked ensemble sits at 0.031. Temperature scaling DistilBERT is the next step.
+Confidence was checked on the 2,000-review held-out sample with Expected Calibration Error [12] (lower is better). The calibrated classical models give trustworthy confidence (Logistic Regression 0.020, LinearSVC 0.021, NBSVM 0.021). DistilBERT is the most overconfident (0.032, raw softmax) and the stacked ensemble sits at 0.031.
 
 ## Methodology and reproducibility
 
 - One seeded split (seed 42) into train, dev, and test. All tuning uses dev only. The test set is touched once, for the final numbers.
 - No train/test leakage, checked by hashing the review text across splits.
-- Every accuracy carries a Wilson 95% confidence interval. Every before/after or model-vs-model claim uses a McNemar significance test. The benchmark also reports macro-F1 alongside accuracy.
+- Every accuracy carries a Wilson 95% confidence interval [13]. Every before/after or model-vs-model claim uses a McNemar significance test [14]. The benchmark also reports macro-F1 alongside accuracy.
 - Base transformer: distilbert-base-uncased. Datasets: IMDB (aclImdb), SST-2 (from GLUE), and Yelp polarity.
 - Two number sources, labeled throughout: the headline accuracies are the full 25,000-review IMDB test set; the calibration and error-analysis numbers are a separate 2,000-review held-out sample.
 
@@ -115,13 +121,6 @@ python benchmark.py                        # all 7 options + baselines on IMDB, 
 ```
 
 The classical pipeline is exactly reproducible. DistilBERT fine-tuning is approximately reproducible, with small variation from GPU nondeterminism.
-
-## Limitations and next steps
-
-- The stacked ensemble is below the IMDB state of the art (around 96%). The goal was a measured, well-understood system, not a leaderboard score.
-- The ensemble's gains on SST-2 and Yelp are within noise, so the strong claim holds only for IMDB.
-- DistilBERT's confidence is overconfident. Temperature scaling is the planned fix.
-- The fine-tuned DistilBERT and the stacked ensemble need PyTorch and 268 MB, so the live demo serves only the four classical models and the rule-based mode. A heavier host for the transformer options is still open.
 
 ## Live demo and deployment
 
@@ -167,7 +166,7 @@ src/training/
   cost_table.py           size and latency measurements
   calibration.py          Expected Calibration Error
   error_analysis.py       error breakdown by length and negation
-  zero_shot_baseline.py   zero-shot bart-large-mnli baseline
+  zero_shot_baseline.py   zero-shot bart and distilbert baselines
 evaluate.py               IMDB evaluation harness
 benchmark.py              multi-dataset benchmark, all 7 options
 tests/                    test suite
@@ -176,7 +175,25 @@ templates/, static/, vercel_static/   frontend
 
 ## Tech stack
 
-Python, Flask, scikit-learn, NLTK, NumPy, and SciPy for the app and the classical models. PyTorch and Hugging Face Transformers for the fine-tuned DistilBERT and the stacked ensemble.
+Python, Flask, scikit-learn [15], NLTK, NumPy, and SciPy for the app and the classical models. PyTorch and Hugging Face Transformers for the fine-tuned DistilBERT and the stacked ensemble.
+
+## References
+
+[1] A. L. Maas, R. E. Daly, P. T. Pham, D. Huang, A. Y. Ng, and C. Potts, "Learning Word Vectors for Sentiment Analysis," in Proc. ACL, 2011, pp. 142-150. https://aclanthology.org/P11-1015/
+[2] R. Socher et al., "Recursive Deep Models for Semantic Compositionality Over a Sentiment Treebank," in Proc. EMNLP, 2013, pp. 1631-1642. https://aclanthology.org/D13-1170/
+[3] A. Wang, A. Singh, J. Michael, F. Hill, O. Levy, and S. R. Bowman, "GLUE: A Multi-Task Benchmark and Analysis Platform for Natural Language Understanding," arXiv:1804.07461, 2018. https://arxiv.org/abs/1804.07461
+[4] X. Zhang, J. Zhao, and Y. LeCun, "Character-level Convolutional Networks for Text Classification," in Proc. NeurIPS, 2015, pp. 649-657. https://arxiv.org/abs/1509.01626
+[5] C. J. Hutto and E. Gilbert, "VADER: A Parsimonious Rule-Based Model for Sentiment Analysis of Social Media Text," in Proc. ICWSM, 2014, pp. 216-225. https://ojs.aaai.org/index.php/ICWSM/article/view/14550
+[6] W. Yin, J. Hay, and D. Roth, "Benchmarking Zero-shot Text Classification: Datasets, Evaluation and Entailment Approach," in Proc. EMNLP-IJCNLP, 2019. https://arxiv.org/abs/1909.00161
+[7] V. Sanh, L. Debut, J. Chaumond, and T. Wolf, "DistilBERT, a distilled version of BERT: smaller, faster, cheaper and lighter," arXiv:1910.01108, 2019. https://arxiv.org/abs/1910.01108
+[8] M. Lewis et al., "BART: Denoising Sequence-to-Sequence Pre-training for Natural Language Generation, Translation, and Comprehension," in Proc. ACL, 2020, pp. 7871-7880. https://aclanthology.org/2020.acl-main.703/
+[9] S. Wang and C. D. Manning, "Baselines and Bigrams: Simple, Good Sentiment and Topic Classification," in Proc. ACL, 2012, pp. 90-94. https://aclanthology.org/P12-2018/
+[10] D. H. Wolpert, "Stacked Generalization," Neural Networks, vol. 5, no. 2, pp. 241-259, 1992. https://www.sciencedirect.com/science/article/abs/pii/S0893608005800231
+[11] M. J. van der Laan, E. C. Polley, and A. E. Hubbard, "Super Learner," Statistical Applications in Genetics and Molecular Biology, vol. 6, no. 1, 2007. https://biostats.bepress.com/ucbbiostat/paper222/
+[12] C. Guo, G. Pleiss, Y. Sun, and K. Q. Weinberger, "On Calibration of Modern Neural Networks," in Proc. ICML, 2017. https://arxiv.org/abs/1706.04599
+[13] E. B. Wilson, "Probable Inference, the Law of Succession, and Statistical Inference," J. Amer. Stat. Assoc., vol. 22, no. 158, pp. 209-212, 1927. https://www.tandfonline.com/doi/abs/10.1080/01621459.1927.10502953
+[14] T. G. Dietterich, "Approximate Statistical Tests for Comparing Supervised Classification Learning Algorithms," Neural Computation, vol. 10, no. 7, pp. 1895-1923, 1998. https://direct.mit.edu/neco/article-abstract/10/7/1895/6224
+[15] F. Pedregosa et al., "Scikit-learn: Machine Learning in Python," J. Mach. Learn. Res., vol. 12, pp. 2825-2830, 2011. https://jmlr.org/papers/v12/pedregosa11a.html
 
 ## License
 
