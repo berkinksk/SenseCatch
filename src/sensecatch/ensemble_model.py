@@ -54,6 +54,9 @@ except Exception as _e:
     logger.error(f"Could not import NBLogCountRatio (models/nbsvm.pkl may fail to load): {_e}")
     NBLogCountRatio = None
 
+RAW_MODELS = {"naive_bayes", "logistic_regression", "linear_svc", "nbsvm", "distilbert", "stack"}
+
+
 class SentimentEnsemble:
     """Ensemble model that combines multiple sentiment classifiers"""
     
@@ -1760,6 +1763,45 @@ class SentimentEnsemble:
                 "model_used": f"{model_name}_error",
             }
 
+    def _predict_raw_model(self, text, model_name):
+        """Serve one classical model directly, with no rule layer."""
+        try:
+            model = self.models[model_name]
+            vectorizer = self.vectorizers.get(model_name)
+            processed = self._preprocess_text(text)
+            features = vectorizer.transform([processed])
+            dict_vec = self.dict_vectorizers.get(model_name)
+            if dict_vec is not None:
+                feats = self.lexicon.extract_all_features(processed) if self.lexicon else {}
+                features = hstack([features, dict_vec.transform([feats])])
+            expected_dim = getattr(model, "n_features_in_", None)
+            if expected_dim is None and hasattr(model, "coef_"):
+                expected_dim = model.coef_.shape[1]
+            if expected_dim and features.shape[1] != expected_dim:
+                diff = expected_dim - features.shape[1]
+                if diff > 0:
+                    features = hstack([features, csr_matrix((features.shape[0], diff))])
+                else:
+                    features = features[:, :expected_dim]
+            probs = model.predict_proba(features)[0]
+            idx = int(np.argmax(probs))
+            sentiment = self._map_prediction_to_sentiment(model.classes_[idx])
+            return {
+                "text": text,
+                "sentiment": sentiment,
+                "confidence": float(probs[idx]) * 100,
+                "model_used": model_name,
+            }
+        except Exception as e:
+            logger.error(f"Error serving raw {model_name}: {str(e)}")
+            logger.exception(e)
+            return {
+                "text": text,
+                "sentiment": "Neutral",
+                "confidence": 50.0,
+                "model_used": f"{model_name}_error",
+            }
+
     def predict(self, text, modelname=None, specific_model=None, use_sarcasm_detection=True, use_idiom_detection=True, use_contradiction_detection=True):
         """
         Make predictions on a single text input.
@@ -1771,9 +1813,13 @@ class SentimentEnsemble:
         prediction_result = {}
         text = str(text)
         
-        # DistilBERT and the stacked ensemble are binary models served without the rule layer.
-        if modelname in ("distilbert", "stack"):
-            return self._predict_external_model(text, modelname)
+        # All model options serve raw predictions. "rule_based" runs the full rule system.
+        if modelname == "rule_based":
+            modelname = None
+        elif modelname in RAW_MODELS:
+            if modelname in ("distilbert", "stack"):
+                return self._predict_external_model(text, modelname)
+            return self._predict_raw_model(text, modelname)
 
         # First check if this is a simple case - MOVED TO TOP PRIORITY
         simple_case_result = self._handle_simple_cases(text)
