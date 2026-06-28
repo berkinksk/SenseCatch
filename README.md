@@ -175,25 +175,43 @@ templates/, static/, vercel_static/   frontend
 
 ## Tech stack
 
-Python, Flask, scikit-learn [15], NLTK, NumPy, and SciPy for the app and the classical models. PyTorch and Hugging Face Transformers for the fine-tuned DistilBERT and the stacked ensemble.
+Python, Flask, scikit-learn [15], NLTK [16], NumPy, and SciPy for the app and the classical models. PyTorch and Hugging Face Transformers [17] for the fine-tuned DistilBERT and the stacked ensemble.
 
 ## References
 
 [1] A. L. Maas, R. E. Daly, P. T. Pham, D. Huang, A. Y. Ng, and C. Potts, "Learning Word Vectors for Sentiment Analysis," in Proc. ACL, 2011, pp. 142-150. https://aclanthology.org/P11-1015/
+
 [2] R. Socher et al., "Recursive Deep Models for Semantic Compositionality Over a Sentiment Treebank," in Proc. EMNLP, 2013, pp. 1631-1642. https://aclanthology.org/D13-1170/
+
 [3] A. Wang, A. Singh, J. Michael, F. Hill, O. Levy, and S. R. Bowman, "GLUE: A Multi-Task Benchmark and Analysis Platform for Natural Language Understanding," arXiv:1804.07461, 2018. https://arxiv.org/abs/1804.07461
+
 [4] X. Zhang, J. Zhao, and Y. LeCun, "Character-level Convolutional Networks for Text Classification," in Proc. NeurIPS, 2015, pp. 649-657. https://arxiv.org/abs/1509.01626
+
 [5] C. J. Hutto and E. Gilbert, "VADER: A Parsimonious Rule-Based Model for Sentiment Analysis of Social Media Text," in Proc. ICWSM, 2014, pp. 216-225. https://ojs.aaai.org/index.php/ICWSM/article/view/14550
+
 [6] W. Yin, J. Hay, and D. Roth, "Benchmarking Zero-shot Text Classification: Datasets, Evaluation and Entailment Approach," in Proc. EMNLP-IJCNLP, 2019. https://arxiv.org/abs/1909.00161
+
 [7] V. Sanh, L. Debut, J. Chaumond, and T. Wolf, "DistilBERT, a distilled version of BERT: smaller, faster, cheaper and lighter," arXiv:1910.01108, 2019. https://arxiv.org/abs/1910.01108
+
 [8] M. Lewis et al., "BART: Denoising Sequence-to-Sequence Pre-training for Natural Language Generation, Translation, and Comprehension," in Proc. ACL, 2020, pp. 7871-7880. https://aclanthology.org/2020.acl-main.703/
+
 [9] S. Wang and C. D. Manning, "Baselines and Bigrams: Simple, Good Sentiment and Topic Classification," in Proc. ACL, 2012, pp. 90-94. https://aclanthology.org/P12-2018/
+
 [10] D. H. Wolpert, "Stacked Generalization," Neural Networks, vol. 5, no. 2, pp. 241-259, 1992. https://www.sciencedirect.com/science/article/abs/pii/S0893608005800231
+
 [11] M. J. van der Laan, E. C. Polley, and A. E. Hubbard, "Super Learner," Statistical Applications in Genetics and Molecular Biology, vol. 6, no. 1, 2007. https://biostats.bepress.com/ucbbiostat/paper222/
+
 [12] C. Guo, G. Pleiss, Y. Sun, and K. Q. Weinberger, "On Calibration of Modern Neural Networks," in Proc. ICML, 2017. https://arxiv.org/abs/1706.04599
+
 [13] E. B. Wilson, "Probable Inference, the Law of Succession, and Statistical Inference," J. Amer. Stat. Assoc., vol. 22, no. 158, pp. 209-212, 1927. https://www.tandfonline.com/doi/abs/10.1080/01621459.1927.10502953
+
 [14] T. G. Dietterich, "Approximate Statistical Tests for Comparing Supervised Classification Learning Algorithms," Neural Computation, vol. 10, no. 7, pp. 1895-1923, 1998. https://direct.mit.edu/neco/article-abstract/10/7/1895/6224
+
 [15] F. Pedregosa et al., "Scikit-learn: Machine Learning in Python," J. Mach. Learn. Res., vol. 12, pp. 2825-2830, 2011. https://jmlr.org/papers/v12/pedregosa11a.html
+
+[16] S. Bird and E. Loper, "NLTK: The Natural Language Toolkit," in Proc. ACL Interactive Poster and Demonstration Sessions, 2004. https://aclanthology.org/P04-3031/
+
+[17] T. Wolf et al., "Transformers: State-of-the-Art Natural Language Processing," in Proc. EMNLP System Demonstrations, 2020, pp. 38-45. https://aclanthology.org/2020.emnlp-demos.6/
 
 ## License
 
