@@ -126,7 +126,7 @@ The classical pipeline is exactly reproducible. DistilBERT fine-tuning is approx
 
 ## Live demo and deployment
 
-The frontend is static HTML, CSS, and JavaScript on Vercel. The backend is Flask and Gunicorn on Render, serving the `/analyze` endpoint. The demo at [sensecatch.ai](https://sensecatch.ai) runs the four classical models and the rule-based mode. The transformer and the stacked ensemble run locally, because the production server does not include PyTorch.
+The frontend is static HTML, CSS, and JavaScript on Vercel. The backend runs as a Docker container on Hugging Face Spaces, serving the `/analyze` endpoint with all seven models, including the fine-tuned DistilBERT and the stacked ensemble. The demo at [sensecatch.ai](https://sensecatch.ai) calls that backend. The free Space sleeps after a period of inactivity, so the first request after idle takes a few seconds to wake it.
 
 ## Getting started
 
