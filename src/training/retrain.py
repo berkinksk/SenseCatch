@@ -22,7 +22,7 @@ for _p in (PROJECT_ROOT, THIS_DIR):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import data_split  # noqa: E402  (src/training/data_split.py — the seeded split, 7.2)
+import data_split  # noqa: E402  (the seeded train/dev/test split)
 
 
 class CorpusError(RuntimeError):
