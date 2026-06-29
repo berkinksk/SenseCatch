@@ -114,11 +114,13 @@ The trained models (the .pkl files and the 268 MB DistilBERT directory) are not 
 
 ```bash
 python src/training/data_split.py          # seeded train/dev/test split
-python src/training/retrain.py             # the four classical models
+python src/training/retrain.py --train-deployed  # the four classical models
 python src/training/finetune_distilbert.py # fine-tune DistilBERT (GPU recommended)
 python src/training/stack_ensemble.py      # build and evaluate the stacked ensemble
 python benchmark.py                        # all 7 options + baselines on IMDB, SST-2, Yelp
 ```
+
+Running `python reproduce.py` regenerates every artifact above in order, and `python verify_readme_numbers.py` then checks that every reported number matches the regenerated artifacts.
 
 The classical pipeline is exactly reproducible. DistilBERT fine-tuning is approximately reproducible, with small variation from GPU nondeterminism.
 
