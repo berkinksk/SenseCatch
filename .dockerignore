@@ -1,0 +1,12 @@
+# Keep the build context small. Do not add models/ here, the app loads from it.
+venv/
+datasets/
+artifacts/
+nltk_data/
+.git/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.DS_Store
+tests/

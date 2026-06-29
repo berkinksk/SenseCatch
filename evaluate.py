@@ -19,6 +19,7 @@ Usage:
 import os
 import sys
 import json
+import random
 import time
 import shutil
 import tarfile
@@ -47,6 +48,7 @@ IMDB_URL = "https://ai.stanford.edu/~amaas/data/sentiment/aclImdb_v1.tar.gz"
 IMDB_DIR = os.path.join(PROJECT_ROOT, "datasets", "aclImdb")
 IMDB_TAR = os.path.join(PROJECT_ROOT, "datasets", "aclImdb_v1.tar.gz")
 RESULTS_PATH = os.path.join(PROJECT_ROOT, "artifacts", "evaluation_results.json")
+PREPROCESS_VERSION = "v1"  # bump when ensemble._preprocess_text changes -> invalidates the preprocess cache
 
 # ---------------------------------------------------------------------------
 # IMDB dataset
@@ -85,15 +87,22 @@ def download_imdb():
     print("Extraction complete.")
 
 
-def load_imdb_test(max_per_class=None):
-    """Load the IMDB test split. Returns (texts, labels) where labels are 0/1."""
+def load_imdb_test(max_per_class=None, seed=42):
+    """Load the IMDB test split. Returns (texts, labels) where labels are 0/1.
+
+    When max_per_class is set (quick mode), draw a seeded, class-balanced
+    random sample per class, not the first-N-sorted slice. The sorted slice
+    was about 2 to 4 points optimistic; a random sample is an unbiased,
+    reproducible preview of the full test set.
+    """
     texts, labels = [], []
+    rng = random.Random(seed)
 
     for sentiment, label in [("pos", 1), ("neg", 0)]:
         folder = os.path.join(IMDB_DIR, "test", sentiment)
         filenames = sorted(os.listdir(folder))
-        if max_per_class:
-            filenames = filenames[:max_per_class]
+        if max_per_class and max_per_class < len(filenames):
+            filenames = sorted(rng.sample(filenames, max_per_class))
         for fname in filenames:
             with open(os.path.join(folder, fname), "r", encoding="utf-8") as f:
                 texts.append(f.read())
@@ -151,7 +160,28 @@ def load_ensemble():
 
 
 def preprocess_texts(ensemble, texts):
-    """Preprocess all texts once using the ensemble's pipeline. Returns list of strings."""
+    """Preprocess all texts once using the ensemble's pipeline. Returns list of strings.
+
+    Caches the preprocessed TEXT to disk (model-independent) keyed by a hash of
+    (PREPROCESS_VERSION + the input texts). The NLTK pos_tag/ne_chunk pass
+    dominates runtime (~0.1s/review -> ~41 min on 25K), so a warm run skips it.
+    Feature matrices are deliberately not cached; they change on every retrain.
+    """
+    import hashlib
+
+    cache_dir = os.path.join(PROJECT_ROOT, "artifacts", "cache")
+    key = hashlib.sha256(
+        (PREPROCESS_VERSION + "\x00".join(texts)).encode("utf-8")
+    ).hexdigest()[:16]
+    cache_path = os.path.join(cache_dir, f"preproc_{key}.json")
+
+    if os.path.isfile(cache_path):
+        with open(cache_path, "r", encoding="utf-8") as f:
+            cached = json.load(f)
+        if len(cached) == len(texts):
+            print(f"  Loaded {len(cached)} preprocessed texts from cache.")
+            return cached
+
     total = len(texts)
     step = max(1, total // 10)  # report every 10%
     print(f"  Preprocessing {total} texts...")
@@ -161,6 +191,10 @@ def preprocess_texts(ensemble, texts):
         if (i + 1) % step == 0 or (i + 1) == total:
             pct = (i + 1) / total * 100
             print(f"    {i + 1}/{total} ({pct:.0f}%) preprocessed", flush=True)
+
+    os.makedirs(cache_dir, exist_ok=True)
+    with open(cache_path, "w", encoding="utf-8") as f:
+        json.dump(processed, f)
     return processed
 
 
@@ -298,7 +332,7 @@ def evaluate_full_system(ensemble, texts, labels):
         elif sent == "Negative":
             preds.append(0)
         else:
-            # Neutral on binary data — count as incorrect
+            # Neutral on binary data, so count it as incorrect
             preds.append(1 - labels[i])
             neutral_count += 1
 
@@ -314,17 +348,27 @@ def evaluate_distilbert(texts, labels):
     """DistilBERT (SST-2 fine-tuned) as a SOTA reference."""
     try:
         from transformers import pipeline
+        import torch
     except ImportError:
         print(
             "\n  [Skipped] DistilBERT requires: pip install transformers torch"
         )
         return None
 
-    print("  Loading DistilBERT model...")
+    # Auto-select the fastest available device: CUDA GPU, then Apple
+    # Silicon GPU (MPS), else CPU. Predictions are device-independent.
+    if torch.cuda.is_available():
+        device = 0
+    elif getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+        device = "mps"
+    else:
+        device = -1
+
+    print(f"  Loading DistilBERT model... (device={device})")
     classifier = pipeline(
         "sentiment-analysis",
         model="distilbert-base-uncased-finetuned-sst-2-english",
-        device=-1,
+        device=device,
         truncation=True,
         max_length=512,
     )
@@ -356,7 +400,7 @@ def evaluate_distilbert(texts, labels):
 def print_ablation_table(rows, distilbert_metrics=None):
     """Print formatted ablation study summary."""
     print(f"\n{'=' * 62}")
-    print(f"  ABLATION STUDY — IMDB Test Set")
+    print(f"  ABLATION STUDY: IMDB Test Set")
     print(f"{'=' * 62}")
     print(f"  {'Component':<42} {'Acc':>7}  {'F1':>7}")
     print(f"  {'-' * 42} {'-' * 7}  {'-' * 7}")
@@ -408,7 +452,7 @@ def main():
     max_per_class = 1000 if args.quick else None
     total_samples = (max_per_class * 2) if max_per_class else 25000
 
-    print(f"\n SenseCatch Evaluation — IMDB Test Set ({total_samples:,} reviews)")
+    print(f"\n SenseCatch Evaluation: IMDB Test Set ({total_samples:,} reviews)")
     print("=" * 62)
 
     # --- Load data --------------------------------------------------------

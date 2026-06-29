@@ -47,3 +47,5 @@ docs/
 project_context_prompt.txt
 project-plans.md
 .gitattributes
+# Internal local-only reference notes
+Useful Things To Know/

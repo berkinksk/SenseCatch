@@ -28,6 +28,11 @@
                             <select id="model-selector">
                                 <option value="naive_bayes">Naive Bayes</option>
                                 <option value="logistic_regression">Logistic Regression</option>
+                                <option value="linear_svc">Linear SVC</option>
+                                <option value="nbsvm">NBSVM</option>
+                                <option value="distilbert">DistilBERT (fine-tuned)</option>
+                                <option value="stack">Stacked Ensemble</option>
+                                <option value="rule_based">Rule-based (linguistic)</option>
                             </select>
                         </div>
                         <button id="analyze-btn">Analyze Sentiment</button>
@@ -63,23 +68,8 @@
     </div>
 
     <script>
-        // Automatic API endpoint selection based on deployment environment
-        // Production domains (sensecatch.ai, www.sensecatch.ai) → production API
-        // Preview/staging domains (*.vercel.app) → testing API
-        (function() {
-            const hostname = window.location.hostname;
-            const isProduction = hostname === 'sensecatch.ai' || hostname === 'www.sensecatch.ai';
-            
-            if (isProduction) {
-                window.SENSECATCH_API_BASE = 'https://api.sensecatch.ai/analyze';
-                console.log('🚀 Production mode: Using production API at api.sensecatch.ai');
-            } else {
-                window.SENSECATCH_API_BASE = 'https://sensecatch-model-improvements-branch.onrender.com/analyze';
-                console.log('🧪 Preview/Testing mode: Using testing API at Render testing branch');
-            }
-            
-            console.log('API Base URL:', window.SENSECATCH_API_BASE);
-        })();
+        // Hugging Face Space backend serving all seven models.
+        window.SENSECATCH_API_BASE = 'https://berkinksk-sensecatch.hf.space/analyze';
     </script>
     <script src="/static/main.js"></script>
 </body>
