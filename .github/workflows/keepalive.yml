@@ -1,0 +1,19 @@
+name: Keep the demo warm
+
+# Pings the Hugging Face Space every few hours so it does not go to sleep
+# and so the heavy models stay loaded. The free Space sleeps after 48 hours idle.
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+jobs:
+  warm:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wake the Space and load the models
+        run: |
+          curl -s -m 120 "https://berkinksk-sensecatch.hf.space/healthz" || true
+          curl -s -m 150 -X POST "https://berkinksk-sensecatch.hf.space/analyze" \
+            -H "Content-Type: application/json" \
+            -d '{"text":"a good film","model":"stack"}' || true
