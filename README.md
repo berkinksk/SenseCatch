@@ -46,7 +46,7 @@ The table reports accuracy on three held-out test sets. IMDB (25,000 reviews) [1
 
 The stacked ensemble is the best model on all three datasets. On IMDB it scores 92.98% (95% Wilson interval 92.66 to 93.29) and beats the fine-tuned DistilBERT by 1.8 points (McNemar p = 2.71e-33). On the smaller SST-2 and Yelp sets it is still best, but the margin is not statistically significant (p = 0.21 and p = 0.26), so the result does not support a real-gain claim there. For reference, the state of the art on IMDB is around 96%, which this project does not try to reach.
 
-One result worth calling out: the strongest classical models (Logistic Regression, LinearSVC, NBSVM) beat the off-the-shelf DistilBERT on IMDB (90.8 vs 89.1). The off-the-shelf model wins on the cross-domain sets. The stacked ensemble is best on all three datasets.
+One result worth calling out: the strongest classical models (Logistic Regression, LinearSVC, NBSVM) beat the off-the-shelf DistilBERT on IMDB (90.8 vs 89.1). The off-the-shelf model wins on the cross-domain sets.
 
 ### Fine-tuning vs zero-shot
 
@@ -124,6 +124,8 @@ Running `python reproduce.py` regenerates every artifact above in order, and `py
 
 The classical pipeline is exactly reproducible. DistilBERT fine-tuning is approximately reproducible, with small variation from GPU nondeterminism.
 
+See [MODEL_CARD.md](MODEL_CARD.md) for intended use, training data, per-dataset metrics, and limitations.
+
 ## Live demo and deployment
 
 The frontend is static HTML, CSS, and JavaScript on Vercel. The backend runs as a Docker container on Hugging Face Spaces, serving the `/analyze` endpoint with all seven models, including the fine-tuned DistilBERT and the stacked ensemble. The demo at [sensecatch.ai](https://sensecatch.ai) calls that backend. The free Space sleeps after a period of inactivity, so the first request after idle takes a few seconds to wake it.
@@ -171,6 +173,8 @@ src/training/
   zero_shot_baseline.py   zero-shot bart and distilbert baselines
 evaluate.py               IMDB evaluation harness
 benchmark.py              multi-dataset benchmark, all 7 options
+reproduce.py              regenerates every benchmark artifact in order
+verify_readme_numbers.py  checks the README numbers against the saved artifacts
 tests/                    test suite
 templates/, static/, vercel_static/   frontend
 ```
