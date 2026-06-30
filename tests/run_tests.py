@@ -1,4 +1,11 @@
 #!/usr/bin/env python
+"""Diagnostic test harness for the sentiment engine.
+
+It runs a large suite of labeled cases, including deliberately hard ones
+(sarcasm, negation, mixed sentiment), and reports per-category accuracy. This
+is a diagnostic tool for spotting weak areas, not a pass/fail gate, so a pass
+rate below 100 percent is expected.
+"""
 
 import os
 import sys
