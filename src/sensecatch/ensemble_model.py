@@ -439,7 +439,7 @@ class SentimentEnsemble:
         # Check for recommendation context
         recommendation_context = ['recommend', 'recommendation', 'advise', 'endorse', 'suggest']
         
-        # Define complex negation cases - ENHANCED FOR ISN'T BAD CASES
+        # Negated phrases that flip sentiment
         explicit_negated_phrases = {
             # Negative phrases
             "don't recommend": (0, 0.92),  # Negative with high confidence
@@ -459,7 +459,7 @@ class SentimentEnsemble:
             "absolutely recommend": (1, 0.94),
             "would recommend": (1, 0.9),
             
-            # EXPANDED: Double negative expressions (positive) - more variations
+            # Double negatives that read positive
             "not disappointed": (1, 0.8),
             "not bad at all": (1, 0.84),
             "isn't bad at all": (1, 0.85),
@@ -523,7 +523,6 @@ class SentimentEnsemble:
                 product_failure_terms = ["broke", "broken", "failed", "stopped working", "defective",
                                         "malfunctioned", "stopped", "died", "unusable", "useless"]
                 
-                # NEW: Enhanced reasoning logic
                 if any(term in after for term in product_failure_terms):
                     logger.info(f"Product failure reasoning detected after '{marker}'")
                     # Check what comes before the reasoning
@@ -585,7 +584,7 @@ class SentimentEnsemble:
                 if phrase in text_lower:
                     logger.info(f"FOUND positive phrase '{phrase}' in text")
             
-            # NEW: Critical negated compound phrases with sentiment overrides
+            # Compound negations with a fixed sentiment
             compound_negated_phrases = {
                 # Recommendation negations - high priority overrides
                 "don't recommend": {"sentiment": "negative", "confidence": 0.92},
@@ -614,7 +613,7 @@ class SentimentEnsemble:
             forced_sentiment = None  # Will store "positive" or "negative" when a forcing phrase is found
             forced_confidence = None
             
-            # NEW: Check for compound negated phrases with highest priority
+            # Check compound negations first
             for phrase, override in compound_negated_phrases.items():
                 if phrase in text_lower:
                     logger.info(f"Compound negation phrase detected: '{phrase}' → {override['sentiment']}")
@@ -663,7 +662,7 @@ class SentimentEnsemble:
                             # Perform the text replacement
                             text = re.sub(r'\b' + re.escape(phrase) + r'\b', replacement, text.lower(), flags=re.IGNORECASE)
             
-            # NEW: Track complex negation patterns
+            # Track "nor" constructions
             has_nor_construction = bool(re.search(r'(wasn\'t|weren\'t|isn\'t|aren\'t).+nor', text.lower()))
             if has_nor_construction:
                 logger.info(f"Complex 'nor' construction detected: likely double negative pattern")
@@ -727,7 +726,7 @@ class SentimentEnsemble:
                         scope_words = ' '.join(words[i+1:scope_end])
                         logger.info(f"Negation trigger: '{word}' affecting: '{scope_words}'")
             
-            # NEW: Special handling for recommendation terms in negation scope
+            # Negated recommendations
             recommendation_terms = ['recommend', 'recommended', 'recommendation', 'recommending', 'recommends']
             for i, word in enumerate(words):
                 if word.lower() in recommendation_terms and i-1 >= 0 and i-1 < len(words):
@@ -835,7 +834,7 @@ class SentimentEnsemble:
                         "outrageous", "ridiculous", "absurd"
                     ]
                     
-                    # Added emphasis words that boost the effect of positive/negative terms
+                    # Emphasis words that boost positive and negative terms
                     emphasis_words = [
                         "very", "extremely", "absolutely", "truly", "really", "definitely",
                         "quite", "especially", "particularly", "exceptionally", "remarkably",
@@ -928,7 +927,7 @@ class SentimentEnsemble:
                     if is_restaurant:
                         logger.info(f"Restaurant review detected with {food_term_count} food terms and {service_term_count} service terms")
                         
-                        # Critical food quality patterns - high-impact on restaurant sentiment
+                        # Food quality patterns for restaurant reviews
                         food_quality_patterns = [
                             (r'food\s+was\s+(\w+)', strong_positive_markers, True),  # "food was excellent" → positive
                             (r'food\s+was\s+(\w+)', strong_negative_markers, False),  # "food was terrible" → negative
@@ -1178,7 +1177,7 @@ class SentimentEnsemble:
                     logger.warning(f"Safety check: Concerning emotional content detected: '{text}'")
                     return True
             
-            # EXPANDED: Common phrases that should be whitelisted (NOT blocked)
+            # Phrases the safety filter should allow
             whitelist_patterns = [
                 # Comparative expressions
                 r"rather watch paint dry",
