@@ -56,6 +56,25 @@ except Exception as _e:
 
 RAW_MODELS = {"naive_bayes", "logistic_regression", "linear_svc", "nbsvm", "distilbert", "stack"}
 
+_ENGLISH_STOPWORDS = None
+
+
+def _english_stopwords():
+    """Load the NLTK english stopword set once, downloading it if needed."""
+    global _ENGLISH_STOPWORDS
+    if _ENGLISH_STOPWORDS is None:
+        try:
+            from nltk.corpus import stopwords
+            _ENGLISH_STOPWORDS = set(stopwords.words("english"))
+        except Exception:
+            try:
+                nltk.download("stopwords", quiet=True)
+                from nltk.corpus import stopwords
+                _ENGLISH_STOPWORDS = set(stopwords.words("english"))
+            except Exception:
+                _ENGLISH_STOPWORDS = set()
+    return _ENGLISH_STOPWORDS
+
 
 class SentimentEnsemble:
     """Ensemble model that combines multiple sentiment classifiers"""
@@ -1794,12 +1813,14 @@ class SentimentEnsemble:
 
         A token's contribution is its averaged weight times its feature value, which
         is exact for these linear models. Only text tokens are used; the nine lexicon
-        features (the last indices) are skipped. Returns an empty list when nothing
-        clears the noise floor.
+        features (the last indices) are skipped, and pure stopword unigrams are dropped
+        so the list shows meaningful words. Returns an empty list when nothing clears
+        the noise floor.
         """
         try:
             w, _, names, n_text = self._attribution_weights(model_name)
             pos_label = self.models[model_name].classes_[-1]
+            stops = _english_stopwords()
             row = features.tocsr()
             cols = row.indices
             vals = row.data
@@ -1810,14 +1831,13 @@ class SentimentEnsemble:
                 return []
             signed = w[cols] * vals
             toward = signed if pred_label == pos_label else -signed
-            top = float(np.max(toward))
-            if top < 1e-6:
-                return []
-            words = []
-            for k in np.argsort(-toward):
+            # Clean each token pushing toward the prediction, dropping stopword unigrams
+            # before ranking so the top contribution is a meaningful word.
+            candidates = []
+            for k in range(len(cols)):
                 score = float(toward[k])
-                if score <= 0 or score < rel_floor * top:
-                    break
+                if score <= 0:
+                    continue
                 token = str(names[cols[k]])
                 parts = token.split(" ")
                 negated = any(p.lower().endswith("_neg") for p in parts)
@@ -1828,10 +1848,23 @@ class SentimentEnsemble:
                 token = token.strip()
                 if not token:
                     continue
+                if " " not in token and token.lower() in stops:
+                    continue
+                candidates.append((score, float(signed[k]), token, negated))
+            if not candidates:
+                return []
+            top = max(c[0] for c in candidates)
+            if top < 1e-6:
+                return []
+            candidates.sort(key=lambda c: -c[0])
+            words = []
+            for score, sgn, token, negated in candidates:
+                if score < rel_floor * top:
+                    break
                 words.append({
                     "word": token,
                     "importance": round(score / top * 100.0, 1),
-                    "sentiment": "positive" if signed[k] > 0 else "negative",
+                    "sentiment": "positive" if sgn > 0 else "negative",
                     "negated": negated,
                 })
                 if len(words) >= top_k:
