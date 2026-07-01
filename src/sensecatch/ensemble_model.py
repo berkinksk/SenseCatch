@@ -89,6 +89,7 @@ class SentimentEnsemble:
         
         self.vectorizers = {}
         self.dict_vectorizers = {}
+        self._attrib = {}
         self.feature_dimensions = self._load_feature_dimensions()
         self.model_weights = {
             'naive_bayes': 0.3,
@@ -1762,6 +1763,84 @@ class SentimentEnsemble:
                 "model_used": f"{model_name}_error",
             }
 
+    def _attribution_weights(self, model_name):
+        """Build and cache the averaged linear weights for a classical model.
+
+        These models are wrapped in CalibratedClassifierCV, so each has several
+        fitted base estimators. Averaging their coefficients gives, by linearity,
+        the mean base score that the calibration is applied to.
+        """
+        if model_name in self._attrib:
+            return self._attrib[model_name]
+        model = self.models[model_name]
+        vectorizer = self.vectorizers.get(model_name)
+        folds = [cc.estimator for cc in model.calibrated_classifiers_]
+        base = folds[0]
+        if hasattr(base, "coef_"):
+            w = np.mean([f.coef_[0] for f in folds], axis=0)
+            intercept = float(np.mean([f.intercept_[0] for f in folds]))
+        else:
+            w = np.mean([f.feature_log_prob_[1] - f.feature_log_prob_[0] for f in folds], axis=0)
+            intercept = float(np.mean([f.class_log_prior_[1] - f.class_log_prior_[0] for f in folds]))
+        if hasattr(vectorizer, "named_steps") and "cv" in vectorizer.named_steps:
+            names = vectorizer.named_steps["cv"].get_feature_names_out()
+        else:
+            names = vectorizer.get_feature_names_out()
+        self._attrib[model_name] = (w, intercept, names, len(names))
+        return self._attrib[model_name]
+
+    def _influential_tokens(self, model_name, features, pred_label, top_k=5, rel_floor=0.10):
+        """Return the input tokens that most drove a classical model toward its prediction.
+
+        A token's contribution is its averaged weight times its feature value, which
+        is exact for these linear models. Only text tokens are used; the nine lexicon
+        features (the last indices) are skipped. Returns an empty list when nothing
+        clears the noise floor.
+        """
+        try:
+            w, _, names, n_text = self._attribution_weights(model_name)
+            pos_label = self.models[model_name].classes_[-1]
+            row = features.tocsr()
+            cols = row.indices
+            vals = row.data
+            mask = cols < n_text
+            cols = cols[mask]
+            vals = vals[mask]
+            if len(cols) == 0:
+                return []
+            signed = w[cols] * vals
+            toward = signed if pred_label == pos_label else -signed
+            top = float(np.max(toward))
+            if top < 1e-6:
+                return []
+            words = []
+            for k in np.argsort(-toward):
+                score = float(toward[k])
+                if score <= 0 or score < rel_floor * top:
+                    break
+                token = str(names[cols[k]])
+                parts = token.split(" ")
+                negated = any(p.lower().endswith("_neg") for p in parts)
+                if negated:
+                    token = " ".join(p[:-4] if p.lower().endswith("_neg") else p for p in parts)
+                if token.lower().startswith("movietitle_"):
+                    token = token[len("movietitle_"):].replace("_", " ")
+                token = token.strip()
+                if not token:
+                    continue
+                words.append({
+                    "word": token,
+                    "importance": round(score / top * 100.0, 1),
+                    "sentiment": "positive" if signed[k] > 0 else "negative",
+                    "negated": negated,
+                })
+                if len(words) >= top_k:
+                    break
+            return words
+        except Exception as e:
+            logger.error(f"Influential words unavailable for {model_name}: {str(e)}")
+            return []
+
     def _predict_raw_model(self, text, model_name):
         """Serve one classical model directly, with no rule layer."""
         try:
@@ -1785,12 +1864,16 @@ class SentimentEnsemble:
             probs = model.predict_proba(features)[0]
             idx = int(np.argmax(probs))
             sentiment = self._map_prediction_to_sentiment(model.classes_[idx])
-            return {
+            result = {
                 "text": text,
                 "sentiment": sentiment,
                 "confidence": float(probs[idx]) * 100,
                 "model_used": model_name,
             }
+            result["influential_words"] = self._influential_tokens(
+                model_name, features, int(model.classes_[idx])
+            )
+            return result
         except Exception as e:
             logger.error(f"Error serving raw {model_name}: {str(e)}")
             logger.exception(e)
