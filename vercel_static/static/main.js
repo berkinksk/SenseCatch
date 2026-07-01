@@ -240,6 +240,34 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    // Check backend health on load; show the banner only if it is slow to answer.
+    const HEALTH_URL = API_BASE.replace(/\/analyze\/?$/, '/healthz');
+    if (HEALTH_URL !== API_BASE) {
+        let healthTries = 0;
+        const bannerTimer = setTimeout(() => {
+            showInfo('Waking up the machine learning models!\nThe first analysis may take up to ~40 seconds.');
+        }, 1800);
+        const checkHealth = () => {
+            fetch(HEALTH_URL)
+                .then(response => {
+                    if (response.ok) {
+                        clearTimeout(bannerTimer);
+                        hideInfo();
+                        return;
+                    }
+                    scheduleHealthRetry();
+                })
+                .catch(() => scheduleHealthRetry());
+        };
+        const scheduleHealthRetry = () => {
+            healthTries += 1;
+            if (healthTries < 24) {
+                setTimeout(checkHealth, 5000);
+            }
+        };
+        checkHealth();
+    }
+
     // Optional: background warm-up ping to reduce free-tier cold start delay
     try {
         const controller = new AbortController();
