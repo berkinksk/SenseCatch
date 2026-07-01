@@ -110,17 +110,22 @@ document.addEventListener('DOMContentLoaded', () => {
     function displayResult(result) {
         const sentimentClass = result.sentiment === 'Positive' ? 'positive' : 'negative';
         
-        // Create HTML for important words
-        let wordChips = '';
+        // Build the influential-words block only when the model returned words.
+        let wordsBlock = '';
         if (result.important_words && result.important_words.length > 0) {
-            wordChips = result.important_words.map(wordInfo => {
+            const wordChips = result.important_words.map(wordInfo => {
                 const chipClass = wordInfo.sentiment === 'positive' ? 'positive' : 'negative';
                 // Add strikethrough styling for negated words
                 const negatedStyle = wordInfo.negated ? 'text-decoration: line-through;' : '';
                 return `<span class="word-chip ${chipClass}" style="${negatedStyle}" title="${wordInfo.negated ? 'Negated' : ''}">${wordInfo.word}</span>`;
             }).join('');
-        } else {
-            wordChips = '<span class="no-words">No influential words found</span>';
+            wordsBlock = `
+                <div class="important-words">
+                    <h4>Influential Words:</h4>
+                    <div class="word-chips">
+                        ${wordChips}
+                    </div>
+                </div>`;
         }
         
         resultDisplay.innerHTML = `
@@ -135,13 +140,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 </div>
                 
                 <div class="result-text">"${result.text}"</div>
-                
-                <div class="important-words">
-                    <h4>Influential Words:</h4>
-                    <div class="word-chips">
-                        ${wordChips}
-                    </div>
-                </div>
+
+                ${wordsBlock}
                 
                 <p class="model-type">Model: ${formatModelName(result.model)}</p>
             </div>
