@@ -17,7 +17,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const infoClose = document.getElementById('info-close');
     const FIRST_VISIT_KEY = 'sc_first_visit_shown_v1';
     const LAST_SUCCESS_TS = 'sc_last_success_ts_v1';
-    const REWARM_SECS = 15 * 60; // Render free sleeps after ~15 min
+    const REWARM_SECS = 15 * 60; // re-show the warm-up notice after this much idle time
 
     function showInfo(message) {
         if (!infoBanner) return;
