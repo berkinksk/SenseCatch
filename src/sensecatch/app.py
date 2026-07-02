@@ -121,10 +121,18 @@ def healthz():
 def analyze():
     try:
         # Get data from request
-        data = request.get_json()
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({'error': 'Request body must be JSON.'}), 400
+
         text = data.get('text', '')
+        if not isinstance(text, str) or not text.strip():
+            return jsonify({'error': 'Text must be a non-empty string.'}), 400
+
         # Valid model values: naive_bayes, logistic_regression, linear_svc, nbsvm, distilbert, stack, rule_based
         model_type = data.get('model', 'naive_bayes')  # Default to naive_bayes
+        if not isinstance(model_type, str) or not model_type.strip():
+            model_type = 'naive_bayes'
         
         logger.info(f"Analyzing text: '{text}' with model: {model_type}")
         
