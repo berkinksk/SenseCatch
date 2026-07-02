@@ -1,6 +1,10 @@
 # SenseCatch
 
+[![CI](https://github.com/berkinksk/SenseCatch/actions/workflows/ci.yml/badge.svg)](https://github.com/berkinksk/SenseCatch/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE) [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg?logo=python&logoColor=white)](https://www.python.org/) [![Live Demo](https://img.shields.io/badge/demo-sensecatch.ai-blue)](https://www.sensecatch.ai) [![Hugging Face Space](https://img.shields.io/badge/%F0%9F%A4%97%20Space-sensecatch-yellow)](https://huggingface.co/spaces/berkinksk/sensecatch)
+
 *Sentiment analysis with classical models, a fine-tuned DistilBERT, and a stacked ensemble, benchmarked on three datasets.*
+
+![The live demo analyzing a positive review with the stacked ensemble](assets/hero.png)
 
 SenseCatch is a deployable sentiment web app (live at [sensecatch.ai](https://sensecatch.ai)) that labels reviews as Positive or Negative. The project builds small, interpretable models that run cheaply on CPU, and tests whether that is enough by benchmarking them against a fine-tuned DistilBERT, a zero-shot classifier, and a stacked ensemble.
 
@@ -78,6 +82,8 @@ Take the sentence "This movie was not bad at all." The raw classical models pred
 
 ## The seven models
 
+![The model selector with all seven options](assets/models.png)
+
 - **Naive Bayes, Logistic Regression, LinearSVC, NBSVM [9]** are the four classical models. Each is calibrated, so a stated confidence is close to how often the model is actually right.
 - **DistilBERT (fine-tuned)** is a transformer fine-tuned on the IMDB training set.
 - **Stacked ensemble** is a logistic-regression meta-learner [10] trained on the five base models' predictions. A learned combiner can match or beat its best member [11], and here it pairs the full-text classical models with the context-aware transformer. It is the most accurate option.
@@ -129,6 +135,8 @@ See [MODEL_CARD.md](MODEL_CARD.md) for intended use, training data, per-dataset 
 ## Live demo and deployment
 
 The frontend is static HTML, CSS, and JavaScript on Vercel. The backend runs as a Docker container on Hugging Face Spaces, serving the `/analyze` endpoint with all seven models, including the fine-tuned DistilBERT and the stacked ensemble. The demo at [sensecatch.ai](https://sensecatch.ai) calls that backend. The free Space sleeps after a period of inactivity, so the first request after idle takes a few seconds to wake it.
+
+![A negative review with the influential words highlighted](assets/negative.png)
 
 ## Getting started
 
