@@ -1,13 +1,17 @@
 import os
 import logging
+
+import nltk
 from flask import Flask, request, jsonify, render_template
-import re
-import traceback
 from flask_cors import CORS
 
-# Configure logging
-logging.basicConfig(level=logging.DEBUG)
+from src.sensecatch.ensemble_model import SentimentEnsemble, RAW_MODELS
+
+# force=True replaces the DEBUG setup the engine module applies on import.
+logging.basicConfig(level=logging.INFO, force=True)
 logger = logging.getLogger(__name__)
+# The engine logs review text at INFO level, so keep only its warnings and errors.
+logging.getLogger('src.sensecatch.ensemble_model').setLevel(logging.WARNING)
 
 # Create the Flask app with explicit template & static folders (project root)
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -45,71 +49,68 @@ try:
 except Exception as e:
     logger.error(f"CORS configuration error: {e}")
 
-# Set NLTK data path explicitly
-nltk_data_path = os.path.join(os.getcwd(), 'nltk_data')
-os.environ['NLTK_DATA'] = nltk_data_path
-if not os.path.exists(nltk_data_path):
-    os.makedirs(nltk_data_path)
+# NLTK data the app needs, with the path NLTK uses to find each package.
+NLTK_RESOURCES = [
+    ('punkt', 'tokenizers/punkt'),
+    ('stopwords', 'corpora/stopwords'),
+    ('wordnet', 'corpora/wordnet.zip'),
+    ('omw-1.4', 'corpora/omw-1.4.zip'),
+    ('vader_lexicon', 'sentiment/vader_lexicon.zip'),
+    ('sentiwordnet', 'corpora/sentiwordnet'),
+    ('averaged_perceptron_tagger', 'taggers/averaged_perceptron_tagger'),
+    ('maxent_ne_chunker', 'chunkers/maxent_ne_chunker'),
+    ('words', 'corpora/words'),
+]
 
-# Try to import nltk, but handle the error if it fails
-try:
-    import nltk
-    nltk.data.path.insert(0, nltk_data_path)
-    
-    # Download essential NLTK data if not available
+# The Docker image fills NLTK_DATA at build time. Locally, ./nltk_data is used.
+nltk_data_dir = os.environ.get('NLTK_DATA') or os.path.join(os.getcwd(), 'nltk_data')
+if nltk_data_dir not in nltk.data.path:
+    nltk.data.path.insert(0, nltk_data_dir)
+for name, path in NLTK_RESOURCES:
     try:
-        nltk.download('punkt', download_dir=nltk_data_path, quiet=True)
-        nltk.download('stopwords', download_dir=nltk_data_path, quiet=True)
-        nltk.download('vader_lexicon', download_dir=nltk_data_path, quiet=True)
-        nltk.download('wordnet', download_dir=nltk_data_path, quiet=True)
-        nltk.download('averaged_perceptron_tagger', download_dir=nltk_data_path, quiet=True)
-        nltk.download('maxent_ne_chunker', download_dir=nltk_data_path, quiet=True)
-        nltk.download('words', download_dir=nltk_data_path, quiet=True)
-        logger.info(f"NLTK resources downloaded successfully to {nltk_data_path}")
-    except Exception as e:
-        logger.error(f"Error downloading NLTK resources: {str(e)}")
-except ImportError:
-    logger.warning("NLTK package not available. Fallback tokenization will be used.")
-    nltk = None
+        nltk.data.find(path)
+    except LookupError:
+        logger.info(f"Downloading NLTK resource: {name}")
+        nltk.download(name, download_dir=nltk_data_dir, quiet=True)
 
-# Simple fallback tokenization without relying on NLTK
-def simple_tokenize(text):
-    return text.lower().split()
+VALID_MODELS = RAW_MODELS | {'rule_based'}
+ANALYSIS_FAILED = 'Something went wrong while analyzing the text. Please try again.'
 
-# Import ensemble model with error handling
 ensemble = None
 try:
-    from src.sensecatch.ensemble_model import SentimentEnsemble
     logger.info("Initializing ensemble model...")
     ensemble = SentimentEnsemble()
     logger.info("Ensemble model initialized successfully")
-except Exception as e:
-    logger.error(f"Error initializing ensemble model: {str(e)}")
-    logger.error(traceback.format_exc())
+except Exception:
+    logger.exception("Error initializing ensemble model")
 
-# Function to clean text
-def clean_text(text):
+
+def preload_heavy_models():
+    """Load DistilBERT and the stacked ensemble now, so the first visitor does not wait."""
+    for name in ('distilbert', 'stack'):
+        result = ensemble.predict('A good film.', specific_model=name)
+        if str(result.get('model_used', '')).endswith('_error'):
+            raise RuntimeError(f"{name} could not be loaded")
+
+
+if ensemble is not None and os.environ.get('PRELOAD_MODELS') == '1':
     try:
-        # Delegate to ensemble's clean_text if available
-        if ensemble and hasattr(ensemble, 'clean_text'):
-            return ensemble.clean_text(text)
-        
-        # Fallback cleaning
-        text = text.lower()
-        # Remove special characters but keep apostrophes
-        text = re.sub(r"[^a-z0-9'\\s]", ' ', text)
-        # Remove extra whitespace
-        text = re.sub(r'\s+', ' ', text).strip()
-        return text
-    except Exception as e:
-        logger.error(f"Error in clean_text: {str(e)}")
-        return text.lower()
+        preload_heavy_models()
+        logger.info("Preloaded DistilBERT and the stacked ensemble")
+    except Exception:
+        logger.exception("Could not preload the heavy models")
+
+
+def error_response(message, status):
+    return jsonify({'error': message}), status
+
 
 @app.route('/')
 def home():
     return render_template('index.html')
 
-# Lightweight health check endpoint for Render
+
+# Health check for the frontend and the uptime monitor.
 @app.route('/healthz')
 def healthz():
     return jsonify({
@@ -117,176 +118,44 @@ def healthz():
         'model_initialized': ensemble is not None
     }), 200
 
+
 @app.route('/analyze', methods=['POST'])
 def analyze():
-    try:
-        # Get data from request
-        data = request.get_json()
-        text = data.get('text', '')
-        # Valid model values: naive_bayes, logistic_regression, linear_svc, nbsvm, distilbert, stack, rule_based
-        model_type = data.get('model', 'naive_bayes')  # Default to naive_bayes
-        
-        logger.info(f"Analyzing text: '{text}' with model: {model_type}")
-        
-        # Check if ensemble was initialized
-        if ensemble is None:
-            logger.error("Ensemble model was not initialized properly")
-            return jsonify({
-                'error': 'Sentiment model not available. Please try again later.'
-            }), 500
-        
-        # Clean the text for logging purposes
-        cleaned_text = clean_text(text)
-        logger.info(f"Cleaned text: '{cleaned_text}'")
-        
-        # Use the model prediction with new API format
-        try:
-            # Try with the specific requested model
-            result = ensemble.predict(text, specific_model=model_type)
-            
-            # Result is now a dictionary with all needed information
-            sentiment_label = result.get("sentiment", "Neutral")
-            confidence = result.get("confidence", 50.0)  # Already in percentage
-            important_words = result.get("influential_words", [])
-            model_used = result.get("model_used", model_type)
-            
-            logger.info(f"Analysis result: {sentiment_label} with {confidence:.2f}% confidence")
-            
-            # Return the prediction
-            return jsonify({
-                'text': text,
-                'sentiment': sentiment_label,
-                'confidence': round(confidence, 2),
-                'model': model_used,
-                'important_words': important_words
-            })
-        except Exception as e:
-            logger.error(f"Error in model prediction: {str(e)}")
-            logger.error(traceback.format_exc())
-            
-            # Fall back to a basic analysis
-            return jsonify({
-                'text': text,
-                'sentiment': "Neutral",
-                'confidence': 50.0,
-                'model': "error_fallback",
-                'important_words': []
-            })
-    except Exception as e:
-        logger.error(f"Error in analyze endpoint: {str(e)}")
-        logger.error(traceback.format_exc())
-        return jsonify({
-            'error': str(e)
-        }), 500
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return error_response("Send a JSON body with a 'text' field.", 400)
 
-def analyze_simple_case(text, model_type):
-    """Fallback analysis when model prediction fails"""
-    # Simple rule-based analysis
-    text_lower = text.lower()
-    
-    # Check for obvious positive terms
-    positive_terms = ["good", "great", "excellent", "amazing", "awesome", "love", "nice", "enjoy", "like", "best"]
-    negative_terms = ["bad", "terrible", "awful", "horrible", "worst", "hate", "dislike", "poor", "waste", "boring"]
-    
-    pos_count = sum(1 for term in positive_terms if term in text_lower)
-    neg_count = sum(1 for term in negative_terms if term in text_lower)
-    
-    # Check for negation
-    negations = ["not", "don't", "doesn't", "didn't", "no", "never", "cannot", "nor", "neither"]
-    has_negation = any(neg in text_lower for neg in negations)
-    
-    # Identify words in negation scope
-    words = simple_tokenize(text)
-    negation_scope = {}
-    for i, word in enumerate(words):
-        if word in negations or any(neg in word for neg in ["n't"]):
-            # Mark the next 3 words (or until end of sentence) as in negation scope
-            for j in range(i+1, min(i+4, len(words))):
-                negation_scope[words[j]] = True
-                # End negation scope at punctuation
-                if words[j].endswith(('.', '!', '?', ',')):
-                    break
-    
-    # Check for contrast markers
-    contrast_markers = ["but", "however", "although", "though", "despite", "yet"]
-    has_contrast = any(marker in text_lower for marker in contrast_markers)
-    
-    # Check for neutral indicators
-    neutral_indicators = ["average", "mediocre", "ok", "okay", "fine", "neither", "nor"]
-    has_neutral = any(indicator in text_lower for indicator in neutral_indicators)
-    
-    # Simple logic for sentiment
-    if has_neutral or (pos_count == neg_count and pos_count > 0):
-        # Likely neutral
-        sentiment = "Neutral"
-        confidence = 60
-    elif has_negation:
-        # Negation flips the sentiment
-        if pos_count > neg_count:
-            sentiment = "Negative"
-            confidence = min(65 + (pos_count * 5), 90)
-        elif neg_count > pos_count:
-            sentiment = "Positive"
-            confidence = min(65 + (neg_count * 5), 90)
-        else:
-            # No clear sentiment with negation
-            sentiment = "Neutral"
-            confidence = 60
-    elif has_contrast:
-        # With contrast markers, be more cautious
-        if pos_count > neg_count + 2:
-            sentiment = "Positive"
-            confidence = 70
-        elif neg_count > pos_count + 2:
-            sentiment = "Negative"
-            confidence = 70
-        else:
-            sentiment = "Neutral"
-            confidence = 60
-    else:
-        if pos_count > neg_count:
-            sentiment = "Positive"
-            confidence = min(70 + (pos_count * 5), 95)
-        elif neg_count > pos_count:
-            sentiment = "Negative"
-            confidence = min(70 + (neg_count * 5), 95)
-        else:
-            # Neutral or unclear sentiment
-            sentiment = "Neutral"
-            confidence = 60
-    
-    # Generate simple word importance
-    important_words = []
-    
-    for word in words:
-        # Check if word is in negation scope
-        word_in_negation = word in negation_scope
-        
-        if word in positive_terms:
-            important_words.append({
-                "word": word,
-                "importance": 80.0,
-                "sentiment": "positive",  # Keep raw sentiment for color coding
-                "negated": word_in_negation  # Add negation information
-            })
-        elif word in negative_terms:
-            important_words.append({
-                "word": word,
-                "importance": 80.0,
-                "sentiment": "negative",  # Keep raw sentiment for color coding
-                "negated": word_in_negation  # Add negation information
-            })
-    
-    important_words = important_words[:5]  # Limit to 5 words
-    
-    logger.info(f"Using fallback analysis: {sentiment} with {confidence}% confidence")
-    return jsonify({
-        'text': text,
-        'sentiment': sentiment,
-        'confidence': round(confidence, 2),
-        'model': model_type + " (fallback)",
-        'important_words': important_words
-    })
+    text = data.get('text')
+    if not isinstance(text, str) or not text.strip():
+        return error_response('Please enter some text to analyze.', 400)
+
+    model_type = data.get('model', 'naive_bayes')
+    if not isinstance(model_type, str) or model_type not in VALID_MODELS:
+        return error_response(f'Unknown model: {model_type}', 400)
+
+    if ensemble is None:
+        return error_response('The models are not available right now. Please try again in a moment.', 503)
+
+    try:
+        result = ensemble.predict(text, specific_model=model_type)
+        model_used = result.get('model_used', model_type)
+        # The engine marks a failed prediction with an "_error" model name.
+        if str(model_used).endswith('_error'):
+            raise RuntimeError(f"{model_type} could not make a prediction")
+        response = {
+            'text': text,
+            'sentiment': result['sentiment'],
+            'confidence': round(float(result['confidence']), 2),
+            'model': model_used,
+            'important_words': result.get('influential_words', []),
+        }
+    except Exception:
+        logger.exception(f"Prediction failed for model {model_type}")
+        return error_response(ANALYSIS_FAILED, 500)
+
+    logger.info(f"Analyzed with {model_used}: {response['sentiment']}")
+    return jsonify(response)
+
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host='127.0.0.1', port=int(os.environ.get('PORT', 7860)))
