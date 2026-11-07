@@ -159,14 +159,18 @@ def load_ensemble():
 # ---------------------------------------------------------------------------
 
 
-def preprocess_texts(ensemble, texts):
+def preprocess_texts(ensemble, texts, use_cache=True):
     """Preprocess all texts once using the ensemble's pipeline. Returns list of strings.
 
     Caches the preprocessed TEXT to disk (model-independent) keyed by a hash of
     (PREPROCESS_VERSION + the input texts). The NLTK pos_tag/ne_chunk pass
     dominates runtime (~0.1s/review -> ~41 min on 25K), so a warm run skips it.
     Feature matrices are deliberately not cached; they change on every retrain.
+    With use_cache=False nothing is read from or written to disk.
     """
+    if not use_cache:
+        return [ensemble._preprocess_text(text) for text in texts]
+
     import hashlib
 
     cache_dir = os.path.join(PROJECT_ROOT, "artifacts", "cache")
