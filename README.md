@@ -182,6 +182,7 @@ benchmark.py              multi-dataset benchmark, all 7 options
 reproduce.py              regenerates every benchmark artifact in order
 verify_readme_numbers.py  checks the README numbers against the saved artifacts
 tests/                    test suite
+diagnostics/              older rule-system diagnostic scripts
 templates/, static/, vercel_static/   frontend
 ```
 
