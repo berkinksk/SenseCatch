@@ -1,7 +1,7 @@
 name: CI
 
-# Compiles every tracked Python file on each push and pull request.
-# This is a fast syntax check that needs no project dependencies.
+# Runs on every push and pull request. The compile job checks that every tracked
+# Python file is valid, and the test job installs the app's dependencies and runs pytest.
 on:
   push:
   pull_request:
@@ -10,9 +10,23 @@ jobs:
   compile:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Compile all tracked Python files
         run: python -m py_compile $(git ls-files '*.py')
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest==9.2.0
+      - name: Run the tests
+        run: python -m pytest -q
