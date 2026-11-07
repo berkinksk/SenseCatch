@@ -1174,7 +1174,7 @@ class SentimentEnsemble:
             # Check for serious harmful terms first
             contains_harmful_terms = any(term in text_lower for term in harmful_terms)
             if contains_harmful_terms:
-                logger.warning(f"Safety check: Harmful content detected in text: '{text}'")
+                logger.warning("Safety check: Harmful content detected")
                 return True
                 
             # Terms that require context analysis
@@ -1194,7 +1194,7 @@ class SentimentEnsemble:
             
             for pattern in self_reference_patterns:
                 if re.search(pattern, text_lower):
-                    logger.warning(f"Safety check: Concerning emotional content detected: '{text}'")
+                    logger.warning("Safety check: Concerning emotional content detected")
                     return True
             
             # Phrases the safety filter should allow
@@ -1314,7 +1314,7 @@ class SentimentEnsemble:
             
             for pattern in strong_context_patterns:
                 if re.search(pattern, text_lower):
-                    logger.warning(f"Safety check: Strong negative context detected: '{text}'")
+                    logger.warning("Safety check: Strong negative context detected")
                     return True
             
             # Check for standalone mild negative terms without review context
@@ -1760,7 +1760,8 @@ class SentimentEnsemble:
                 probs = fd.predict_proba([text])[0]
             else:
                 import stack_ensemble as se
-                probs = se.predict_proba([text])[0]
+                # Live requests skip the preprocessing cache, so no review text is written to disk.
+                probs = se.predict_proba([text], use_cache=False)[0]
             p_pos = float(probs[1])
             if p_pos >= 0.5:
                 sentiment, confidence = "Positive", p_pos * 100
