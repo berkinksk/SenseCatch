@@ -17,6 +17,8 @@ import json
 from pathlib import Path
 from datetime import datetime
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+
 def setup_logging(log_level=logging.INFO):
     """Set up logging for run_tests.py with configurable level"""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -54,7 +56,7 @@ def run_tests(args):
     logger.info("Starting test run...")
     
     # Build command with appropriate arguments
-    cmd = [sys.executable, "test_improvements.py"]
+    cmd = [sys.executable, os.path.join(HERE, "test_improvements.py")]
     
     # Add category filtering if specified
     if args.categories:
@@ -109,7 +111,7 @@ def run_tests(args):
     if args.visualize:
         try:
             logger.info("Generating visualizations...")
-            viz_cmd = [sys.executable, "test_visualizer.py"]
+            viz_cmd = [sys.executable, os.path.join(HERE, "test_visualizer.py")]
             
             if args.report_format:
                 viz_cmd.extend(["--format", args.report_format])
