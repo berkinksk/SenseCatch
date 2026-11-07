@@ -8,10 +8,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const resultDisplay = document.getElementById('result-display');
     const historyList = document.getElementById('history-list');
 
-    // Show the current year in the footer
-    const yearEl = document.getElementById('year');
-    if (yearEl) { yearEl.textContent = new Date().getFullYear(); }
-    
     // Store analysis history
     const analysisHistory = [];
     
