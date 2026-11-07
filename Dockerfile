@@ -13,7 +13,8 @@ ENV HOME=/home/user \
     PATH=/home/user/.local/bin:$PATH \
     PYTHONPATH=/home/user/app \
     NLTK_DATA=/home/user/nltk_data \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PRELOAD_MODELS=1
 
 WORKDIR /home/user/app
 
