@@ -42,9 +42,9 @@ def wilson_ci(acc, n, z=1.96):
     return [round(center - half, 4), round(center + half, 4)]
 
 
-def base_ppos(ensemble, texts, distilbert_dir=None):
+def base_ppos(ensemble, texts, distilbert_dir=None, use_cache=True):
     """Return an (n x 5) array of P(positive), one column per base model."""
-    proc = ev.preprocess_texts(ensemble, texts)
+    proc = ev.preprocess_texts(ensemble, texts, use_cache=use_cache)
     cols = []
     for name in CLASSICAL:
         X = ev.build_features(ensemble, name, proc)
@@ -157,9 +157,9 @@ def _load_serve(stack_path):
     return _SERVE[stack_path]
 
 
-def predict_proba(texts, stack_path=STACK_PATH, distilbert_dir=None):
+def predict_proba(texts, stack_path=STACK_PATH, distilbert_dir=None, use_cache=True):
     stack, ensemble = _load_serve(stack_path)
-    P = base_ppos(ensemble, texts, distilbert_dir)
+    P = base_ppos(ensemble, texts, distilbert_dir, use_cache=use_cache)
     return stack["clf"].predict_proba(P[:, stack["cols"]])
 
 
