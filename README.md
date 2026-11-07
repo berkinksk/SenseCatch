@@ -138,17 +138,21 @@ The frontend is static HTML, CSS, and JavaScript on Vercel. The backend runs as 
 
 ## Getting started
 
+The trained models are not in git, so this setup downloads them from the public Hugging Face Space that runs the live demo. It needs Python 3.12 or newer.
+
 ```bash
 git clone https://github.com/berkinksk/SenseCatch.git
 cd SenseCatch
-python -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
-python src/sensecatch/app.py
+python3 -m venv venv && source venv/bin/activate
+pip install torch==2.10.0 --index-url https://download.pytorch.org/whl/cpu
+pip install -r requirements-space.txt
+python -c "from huggingface_hub import snapshot_download; snapshot_download('berkinksk/sensecatch', repo_type='space', allow_patterns='models/*', local_dir='.')"
+python -m src.sensecatch.app
 ```
 
-A fresh clone has no model files, since they are gitignored. Regenerate them with the commands in the reproducibility section. The four classical models train in a few minutes on CPU. The DistilBERT and stacked ensemble options also need PyTorch.
+Then open http://127.0.0.1:7860. The first start downloads the NLTK data the app needs, so it takes a little longer. The models can also be regenerated from scratch with the commands in the reproducibility section.
 
-Basic usage in Python:
+Basic usage in Python, from the repository root:
 
 ```python
 from src.sensecatch.ensemble_model import SentimentEnsemble
@@ -156,7 +160,7 @@ from src.sensecatch.ensemble_model import SentimentEnsemble
 model = SentimentEnsemble()
 result = model.predict("An absolute masterpiece, beautifully acted and deeply moving.", specific_model="logistic_regression")
 print(result)
-# {'text': 'An absolute masterpiece, beautifully acted and deeply moving.', 'sentiment': 'Positive', 'confidence': 99.99, 'model_used': 'logistic_regression'}
+# {'text': 'An absolute masterpiece, beautifully acted and deeply moving.', 'sentiment': 'Positive', 'confidence': 99.99246210562767, 'model_used': 'logistic_regression', 'influential_words': [{'word': 'moving', 'importance': 100.0, 'sentiment': 'positive', 'negated': False}, ...]}
 ```
 
 ## Project structure
@@ -232,4 +236,4 @@ MIT License. See [LICENSE](LICENSE).
 
 ## Author
 
-Berkin Kaynar · [GitHub](https://github.com/berkinksk)
+Berkin Kaynar
