@@ -15,9 +15,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const infoBanner = document.getElementById('inline-info');
     const infoText = document.getElementById('info-text');
     const infoClose = document.getElementById('info-close');
-    const FIRST_VISIT_KEY = 'sc_first_visit_shown_v1';
-    const LAST_SUCCESS_TS = 'sc_last_success_ts_v1';
-    const REWARM_SECS = 15 * 60; // 15 minutes
+    const WAKE_UP_MESSAGE = 'Waking up the machine learning models!\nThe first analysis may take up to ~40 seconds.';
+    const FRIENDLY_ERROR = 'Sorry, something went wrong. Please try again.';
 
     function showInfo(message) {
         if (!infoBanner) return;
@@ -32,21 +31,24 @@ document.addEventListener('DOMContentLoaded', () => {
         infoClose.addEventListener('click', hideInfo);
     }
 
-    // Initial banner for first click per session
-    function maybeShowFirstVisitBanner() {
-        if (!sessionStorage.getItem(FIRST_VISIT_KEY)) {
-            showInfo('Waking up the machine learning models!\nFirst request may take up to ~40 seconds.');
-            sessionStorage.setItem(FIRST_VISIT_KEY, '1');
+    // Use the server's message for bad input (400), otherwise a general one.
+    async function errorMessageFor(response) {
+        if (response.status === 400) {
+            try {
+                const data = await response.json();
+                if (data && typeof data.error === 'string' && data.error) {
+                    return data.error;
+                }
+            } catch (_) {
+                // not JSON, use the general message
+            }
         }
+        return FRIENDLY_ERROR;
     }
 
-    // Re-warm banner if app likely slept again (no success for 15+ mins)
-    function maybeShowRewarmBanner() {
-        const last = Number(sessionStorage.getItem(LAST_SUCCESS_TS) || '0');
-        const now = Date.now() / 1000;
-        if (!last || (now - last) > REWARM_SECS) {
-            showInfo('The ML models went to sleep due to inactivity. Waking them up now…\n(this may take up to ~40 seconds)');
-        }
+    function showError(message) {
+        resultDisplay.innerHTML = '<div class="result-card"><p></p></div>';
+        resultDisplay.querySelector('p').textContent = message;
     }
 
     // Handle analyze button click
@@ -58,10 +60,9 @@ document.addEventListener('DOMContentLoaded', () => {
             alert('Please enter some text to analyze.');
             return;
         }
-        
-        // Show inline info if first visit and if rewarm needed
-        maybeShowFirstVisitBanner();
-        maybeShowRewarmBanner();
+
+        // Only mention the wake-up when the answer is slow.
+        const wakeTimer = setTimeout(() => showInfo(WAKE_UP_MESSAGE), 2000);
 
         // Show loading state
         analyzeBtn.disabled = true;
@@ -79,13 +80,11 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             
             if (!response.ok) {
-                throw new Error('Server error: ' + response.statusText);
+                showError(await errorMessageFor(response));
+                return;
             }
             
             const result = await response.json();
-            // Success - record timestamp and hide banner
-            sessionStorage.setItem(LAST_SUCCESS_TS, String(Math.floor(Date.now()/1000)));
-            hideInfo();
             
             // Display result
             displayResult(result);
@@ -94,12 +93,10 @@ document.addEventListener('DOMContentLoaded', () => {
             addToHistory(result);
         } catch (error) {
             console.error('Error analyzing text:', error);
-            resultDisplay.innerHTML = `
-                <div class="result-card">
-                    <p>Error analyzing text: ${error.message || 'Unknown error'}. Please try again.</p>
-                </div>
-            `;
+            showError(FRIENDLY_ERROR);
         } finally {
+            clearTimeout(wakeTimer);
+            hideInfo();
             // Reset button state
             analyzeBtn.disabled = false;
             analyzeBtn.textContent = 'Analyze Sentiment';
